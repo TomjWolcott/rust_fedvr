@@ -6,7 +6,6 @@ use crate::gauss_quadrature::gauss_lobatto_quadrature;
 
 mod gauss_quadrature;
 mod complex_wrapper;
-mod ode_solver;
 
 fn main() {
     println!("Hello, world!");
@@ -124,10 +123,9 @@ fn test_solving_ode() {
 
 #[test]
 fn many_interval_ode_solving() {
-    let (t_initial, t_final) = (0.0, 200.0);
-    let delta_time = 1.0;
-    let num_quad_points = 500;
-    // let (t_0, psi_0) = (1.0, Complex::from(c64::new(-0.7950, -1.9895)));
+    let (t_initial, t_final) = (0.0, 100.0);
+    let delta_time = 0.1;
+    let num_quad_points = 20;
     let (t_0, psi_0) = (0.0, Complex::from(1.0));
 
     let (mut t_q, mut psi_q) = (t_0, psi_0);
@@ -216,7 +214,7 @@ fn many_interval_ode_solving() {
 
     println!("Ψ(______) =       Expected       vs       Computed      ");
 
-    sample(1000, t_initial, t_final, |t| {
+    sample(10000, t_initial, t_final, |t| {
         let err = (psi_expected(t) - psi_computed(t)).magnitude();
         println!("Ψ({t:.4}) = {: ^20} vs {: ^20} -- error: {err:.4e}", psi_expected(t).to_string(), psi_computed(t).to_string());
         err_max = err_max.max(err);
