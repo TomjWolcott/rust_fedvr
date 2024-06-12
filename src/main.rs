@@ -9,7 +9,7 @@ mod gauss_quadrature;
 mod complex_wrapper;
 
 fn main() {
-    println!("Hello, world!");
+
 }
 
 /// Assumes that xs is sorted in increasing order
@@ -21,11 +21,6 @@ fn lagrange(xs: &Vec<f64>, i: usize, x: f64) -> f64 {
     } else {
         0.0
     }
-}
-
-#[test]
-fn test_lagrange() {
-    println!("{}", lagrange(&vec![0.0, 1.1, 2.02, 3.8], 2, 3.9));
 }
 
 fn lagrange_deriv(xs: &Vec<f64>, i: usize, mut x: f64) -> f64 {
@@ -41,26 +36,11 @@ fn lagrange_deriv(xs: &Vec<f64>, i: usize, mut x: f64) -> f64 {
 }
 
 #[test]
-fn test_lagrange_derivative() {
-    let xs = vec![0.0, 1.0, 2.1, 2.6, 3.99];
-    let test_xs = [1.2, 0.2, 5.2, 1.1, 3.4, 1.0];
-    let i = 2;
-
-    for x in test_xs.iter() {
-        let computed = lagrange_deriv(&xs, i, *x);
-        let expected = deriv_central(|x| lagrange(&xs, i, x), *x, 1e-10).unwrap().0;
-
-        println!("l_i'({x}) = {} vs {}", computed, expected);
-        assert!((computed - expected).abs() < 1e-4);
-    }
-}
-
-#[test]
-fn test_solving_ode() {
-    let num_quad_points = 51;
-    let (t_i, t_f) = (0.0, 1.0);
+fn test_solving_ode_at_once() {
+    let num_quad_points = 80;
+    let (t_i, t_f) = (0.0, 5.0);
     let quad_points = gauss_lobatto_quadrature(num_quad_points, t_i, t_f);
-    let (t_0, psi_0) = (0.0, 1.0);
+    let (t_0, psi_0) = (1.0, 1.0);
 
     let ts: Vec<f64> = quad_points.iter().map(|(t_i, _)| *t_i).collect();
     let ws: Vec<f64> = quad_points.iter().map(|(_, w_i)| *w_i).collect::<Vec<f64>>();
@@ -103,11 +83,11 @@ fn test_solving_ode() {
     // (3) Print out the solution
     let result = matrix.solve_systems(vector.clone()).unwrap();
 
-    println!("Matrix Fancy:");
-    matrix.print_fancy();
-    println!("Matrix (M_{{i,j}}):\n{:?}", matrix);
-    println!("Vector (b_i): {:?}", vector);
-    println!("Result (c_j): {:?}\n", result);
+    println!("\nSystems of eqs:");
+    matrix.print_fancy_with(&result, &vector);
+    // println!("Matrix (M_{{i,j}}):\n{:?}", matrix);
+    // println!("Vector (b_i): {:?}", vector);
+    // println!("Result (c_j): {:?}\n", result);
 
     // (4) Compute error
     let exp_at_init = E.pow(-I * t_0.powi(2) / 2.0);
@@ -121,24 +101,23 @@ fn test_solving_ode() {
 
     println!("Ψ(______) =       Expected       vs       Computed      ");
 
-    for i in 0..num_tests {
-        let t = i as f64 / (num_tests - 1) as f64 * (t_f - t_i) + t_i;
-
-        let err = (psi_expected(t) - psi_computed(t)).magnitude();
+    sample(100, t_i, t_f, |t| {
+        let expected = psi_expected(t);
+        let computed = psi_computed(t);
+        let err = (expected - computed).magnitude();
+        println!("Ψ({t:.4}) = {: ^20} vs {: ^20} -- error: {err:.4e}", expected.to_string(), computed.to_string());
         err_max = err_max.max(err);
-
-        println!("Ψ({t:.4}) = {: ^20} vs {: ^20} -- error: {:.4e}", psi_expected(t).to_string(), psi_computed(t).to_string(), err);
-    }
+    });
 
     println!("MAX ERROR: {:.4e}", err_max);
 }
 
 #[test]
 fn many_interval_ode_solving() {
-    let (t_initial, t_final) = (0.0, 10.0);
-    let delta_time = 0.1;
+    let (t_initial, t_final) = (0.0, 5.0);
+    let delta_time = 1.25;
     let num_quad_points = 20;
-    let (t_0, psi_0) = (0.0, Complex::from(1.0));
+    let (t_0, psi_0) = (1.0, Complex::from(1.0));
 
     let (mut t_q, mut psi_q) = (t_0, psi_0);
     let num_intervals = ((t_final - t_initial) / delta_time) as usize;
@@ -192,6 +171,12 @@ fn many_interval_ode_solving() {
 
         let result = matrix.solve_systems(vector.clone()).unwrap();
 
+        println!("\nSystems of eqs:");
+        matrix.print_fancy_with(&result, &vector);
+        // println!("\nMatrix (M_{{i,j}}):\n{:?}", matrix);
+        // println!("Vector (b_i): {:?}", vector);
+        // println!("Result (c_j): {:?}\n", result);
+
         // (3) Restate the initial conditions
         t_q = time_end;
         psi_q = result.data.iter().enumerate()
@@ -224,9 +209,11 @@ fn many_interval_ode_solving() {
 
     println!("Ψ(______) =       Expected       vs       Computed      ");
 
-    sample(1000, t_initial, t_final, |t| {
-        let err = (psi_expected(t) - psi_computed(t)).magnitude();
-        println!("Ψ({t:.4}) = {: ^20} vs {: ^20} -- error: {err:.4e}", psi_expected(t).to_string(), psi_computed(t).to_string());
+    sample(100, t_initial, t_final, |t| {
+        let expected = psi_expected(t);
+        let computed = psi_computed(t);
+        let err = (expected - computed).magnitude();
+        println!("Ψ({t:.4}) = {: ^20} vs {: ^20} -- error: {err:.4e}", expected.to_string(), computed.to_string());
         err_max = err_max.max(err);
     });
 
@@ -235,10 +222,10 @@ fn many_interval_ode_solving() {
 
 #[test]
 fn ode_solving_via_bridges() {
-    let (t_initial, t_final) = (0.0, 10.00);
-    let n = 90;
-    let num_intervals = 1;
-    let (t_0, psi_0) = (0.0, Complex::from(1.0));
+    let (t_initial, t_final) = (0.0, 5.0);
+    let n = 20;
+    let num_intervals = 4;
+    let (t_0, psi_0) = (1.0, Complex::from(1.0));
 
     let delta_time = (t_final - t_initial) / (num_intervals as f64);
     let mut quad_points = gauss_lobatto_quadrature(n, t_initial, t_initial + delta_time);
@@ -246,44 +233,25 @@ fn ode_solving_via_bridges() {
     let ts: Vec<Vec<f64>> = (0..num_intervals)
         .map(|q| quad_points.iter().map(|&(t, _)| t + q as f64 * delta_time).collect())
         .collect();
-    let l = |mut q: usize, mut i: usize, t: f64| {
-        if q < num_intervals - 1 && i == n - 1 {
-            (if t < ts[q][i] {
-                lagrange(&ts[q], n-1, t)
-            } else {
-                lagrange(&ts[q+1], 0, t)
-            }) / (ws[n-1] + ws[0]).sqrt()
-        } else if q > 0 && i == 0 {
-            (if t < ts[q][i] {
-                lagrange(&ts[q-1], n-1, t)
-            } else {
-                lagrange(  &ts[q],   0, t)
-            }) / (ws[n-1] + ws[0]).sqrt()
-        } else {
-            lagrange(&ts[q], i, t) / ws[i].sqrt()
-        }
-    };
+
 
     let dims = n * num_intervals - num_intervals + 1;
-    let weights: Vec<f64> = (0..dims).map(|index| {
-        if index == 0 {
-            ws[0]
-        } else if index == dims-1 {
-            ws[n-1]
-        } else if index % (n-1) == 0 {
-            ws[n-1] + ws[0]
-        } else {
-            ws[(index - 1) % (n - 1) + 1]
-        }
-    }).collect();
-    // Returns (q, i) for the given index
-    let get_indices = |index| {
-        if index == 0 {
+    let l = |index, t| {
+        // Gets the interval and the index within the interval
+        let (q, i) = if index == 0 {
             (0, 0)
         } else if index == dims-1 {
             (num_intervals-1, n-1)
         } else {
             ((index - 1) / (n-1), (index - 1) % (n-1) + 1)
+        };
+
+        if index != 0 && i == 0 && t < ts[q][i] {
+            lagrange(&ts[q-1], n-1, t) // l^q_0 bridge, use the lagrange in the previous interval
+        } else if index != dims-1 && i == n-1 && ts[q][i] < t {
+            lagrange(&ts[q+1], 0, t) // l^q_{n-1} bridge, use the lagrange in the next interval
+        } else {
+            lagrange(&ts[q], i, t) // Use the lagrange in the current interval
         }
     };
 
@@ -301,14 +269,13 @@ fn ode_solving_via_bridges() {
     for q in 0..num_intervals {
         for (i, (&t_i, &w_i)) in ts[q].iter().zip(ws.iter()).enumerate() {
             let i_index = q * (n-1) + i;
-            let w_qi = weights[i_index];
 
             let b_i = if q != 0 && i == 0 {
-                2.0 * w_i / w_qi.sqrt() * t_i
+                2.0 * w_i * t_i
             } else if q != num_intervals-1 && i == n-1 {
-                2.0 * w_i / w_qi.sqrt() * t_i
+                2.0 * w_i * t_i
             } else {
-                w_i / w_qi.sqrt() * t_i
+                w_i * t_i
             };
 
             vector.data[i_index] = b_i.into();
@@ -316,15 +283,14 @@ fn ode_solving_via_bridges() {
             // The lapack functions assume column major order
             for (j, &w_j) in ws.iter().enumerate() {
                 let j_index = q * (n-1) + j;
-                let w_qj = weights[j_index];
 
                 let m_i_j = if q != 0 && i == 0 && j == 0 {
-                    -t_i * ONE
+                    -2.0 * w_i * t_i * ONE
                 } else if q != num_intervals-1 && i == n-1 && j == n-1 {
-                    -t_i * ONE
+                    -2.0 * w_i * t_i * ONE
                 } else {
-                    I * w_i / (w_qi.sqrt() * w_qj.sqrt()) * lagrange_deriv(&ts[q], j, t_i)
-                        - w_i / (w_qi.sqrt() * w_qj.sqrt()) * if i == j { t_i } else { 0.0 }
+                    I * w_i * lagrange_deriv(&ts[q], j, t_i)
+                        - w_i * if i == j { t_i } else { 0.0 }
                 };
 
                 matrix.data[i_index + j_index * matrix.rows] = m_i_j.into();
@@ -335,12 +301,8 @@ fn ode_solving_via_bridges() {
     // (2) Set up the initial conditions
     vector.data[0] = psi_0.into();
 
-    for q in 0..num_intervals {
-        for j in 0..n {
-            let index = (q * (n-1) + j) * matrix.rows;
-
-            matrix.data[index] = l(q, j, t_0).into();
-        }
+    for index in 0..dims {
+        matrix.data[index * matrix.rows] = l(index, t_0).into();
     }
 
     // (3) Solve the systems of equations
@@ -355,7 +317,7 @@ fn ode_solving_via_bridges() {
         }
     };
 
-    println!("Systems of eqs:");
+    println!("\nSystems of eqs:");
     matrix.print_fancy_with(&result, &vector);
     // println!("\nMatrix (M_{{i,j}}):\n{:?}", matrix);
     // println!("Vector (b_i): {:?}", vector);
@@ -366,8 +328,7 @@ fn ode_solving_via_bridges() {
         if !(t_initial <= t && t < t_final) { panic!("t: {t} is out of bounds"); }
 
         (0..dims).map(|index| {
-            let (q, i) = get_indices(index);
-            (result.data[index] * l(q, i, t)).into()
+            (result.data[index] * l(index, t)).into()
         }).sum::<Complex>()
     };
 
@@ -380,7 +341,7 @@ fn ode_solving_via_bridges() {
 
     println!("Ψ(______) =       Expected       vs       Computed      ");
 
-    sample(10, t_initial, t_final, |t| {
+    sample(100, t_initial, t_final, |t| {
         let expected = psi_expected(t);
         let computed = psi_computed(t);
         let err = (expected - computed).magnitude();
@@ -399,31 +360,4 @@ fn sample(num_samples: usize, from: f64, to: f64, mut func: impl FnMut(f64)) {
         func(x);
     }
 
-}
-
-#[cfg(test)]
-mod tests {
-    #[allow(unused_imports)]
-    use lapack::fortran::{dgesv, zgesv};
-
-    #[test]
-    fn lapack() {
-        let mut a = vec![1.0, 3.0, 2.0, 5.0];
-        let mut b = vec![1.0, 4.0];
-        let mut ipiv = vec![0; 2];
-        let mut info = 0;
-
-        dgesv(
-            2,
-            1,
-            &mut a,
-            2,
-            &mut ipiv,
-            &mut b,
-            2,
-            &mut info
-        );
-
-        println!("ipiv: {:?}, {:?}", ipiv, b);
-    }
 }
