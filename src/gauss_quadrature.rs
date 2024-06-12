@@ -22,7 +22,7 @@ pub fn gauss_lobatto_quadrature(num_points: usize, from: f64, to: f64) -> Vec<(f
         .map(|(x1, x2)| {
             let mut x = (x1 + x2) / 2.0;
 
-            for _ in 0..100 {
+            for _ in 0..200 {
                 let prev_x = x;
                 x = x - legendre_poly_deriv(x) / deriv_central(legendre_poly_deriv, x, 1e-9).unwrap().0;
                 if (x - prev_x).abs() > 1e-13 { break; }
@@ -33,7 +33,7 @@ pub fn gauss_lobatto_quadrature(num_points: usize, from: f64, to: f64) -> Vec<(f
         .map(|(x, w)| ((0.5 * x + 0.5) * (to - from) + from, w * (to - from) / 2.0))
         .collect();
 
-    let end_weight = 2.0 / (n * (n - 1.0));
+    let end_weight = 2.0 / (n * (n - 1.0)) * (to - from) / 2.0;
     quad_points.insert(0, (from, end_weight));
     quad_points.push((to, end_weight));
 

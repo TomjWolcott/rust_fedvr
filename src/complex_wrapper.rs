@@ -1,6 +1,9 @@
 use rgsl::types::ComplexF64;
 use std::{iter::Sum, ops::*};
+use std::f64::consts::PI;
 use std::fmt::Debug;
+use colored::{Color, Colorize};
+use colors_transform::{Color as ColorTransform, Hsl};
 use lapack::c64;
 use lapack::fortran::zgesv;
 
@@ -150,6 +153,10 @@ impl std::fmt::Display for Complex {
 }
 
 impl Complex {
+    pub fn new(re: f64, im: f64) -> Self {
+        Self(ComplexF64 { dat: [re, im] })
+    }
+
     pub fn pow(self, n: Self) -> Self {
         Self(self.0.pow(&n.0))
     }
@@ -285,6 +292,67 @@ impl ComplexMatrix {
             0 => Ok(ComplexVector { data: b }),
             n @ ..=-1 => Err(LapackError { info, message: format!("Illegal value in argument {}", -n) }),
             n => Err(LapackError { info, message: format!("U({},{}) is exactly zero", n, n) }),
+        }
+    }
+
+    pub fn print_fancy(&self) {
+        for i in 0..self.cols {
+            for j in 0..self.rows {
+                let z = Complex::from(self.data[i + self.rows * j]);
+                let str = match z.magnitude() {
+                    ..=0.0 => "┼─",
+                    _ => "██"
+                };
+
+                let hue = (360.0 * (z.arg() / (2.0 * PI) + 0.5) + 180.0) % 360.0;
+                let (r, g, b) = if z.magnitude() == 0.0 {
+                    (40.0, 40.0, 40.0)
+                } else {
+                    Hsl::from(hue as f32, 80.0, 5.0 * (z.magnitude().log10() + 3.0) as f32).to_rgb().as_tuple()
+                };
+
+                print!("{}", str.truecolor((2.55 * r) as u8, (2.55 * g) as u8, (2.55 * b) as u8));
+            }
+
+            println!();
+        }
+    }
+
+    pub fn print_fancy_with(&self, v1: &ComplexVector, v2: &ComplexVector) {
+        for j in 0..self.rows {
+            for i in 0..self.cols + 2 {
+                if j == self.rows / 2 && i == self.cols + 1 {
+                    print!(" = ");
+                } else if j == self.rows / 2 && i == self.cols {
+                    print!(" * ");
+                } else if i >= self.cols {
+                    print!("   ");
+                }
+
+                let z = Complex::from(if i == self.cols + 1 {
+                    v2.data[j]
+                } else if i == self.cols {
+                    v1.data[j]
+                } else {
+                    self.data[i * self.rows + j]
+                });
+
+                let str = match z.magnitude() {
+                    ..=0.0 => "┼─",
+                    _ => "██"
+                };
+
+                let hue = (360.0 * (z.arg() / (2.0 * PI) + 0.5) + 180.0) % 360.0;
+                let (r, g, b) = if z.magnitude() == 0.0 {
+                    (40.0, 40.0, 40.0)
+                } else {
+                    Hsl::from(hue as f32, 100.0, 5.0 * (z.magnitude().log10() + 3.0) as f32).to_rgb().as_tuple()
+                };
+
+                print!("{}", str.truecolor((2.55 * r) as u8, (2.55 * g) as u8, (2.55 * b) as u8));
+            }
+
+            println!();
         }
     }
 }
