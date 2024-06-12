@@ -25,6 +25,8 @@ Additionally, zeros are displayed as grid markings: `┼─`.  Look at the examp
 This shows $`M_{i,j} * c_j = b_i`$ where $`M_{i,j}`$ and $`b_i`$ are computed and $`c_j`$ is solved for.  $`M_{i,j}`$ is the N x N block on the left, 
 $`c_j`$ is in the middle and $`b_i`$ is on the right.  Also note that the rows of the matrix are indexed by $`i`$ and the columns are indexed by $`j`$.
 
+**Note:** Not all terminals will print this nicely, some will ignore the color and others might interpret the color incorrectly.
+
 ## Outputs
 All of these were done on the range 0.0 to 5.0 with 80 points total optionally split into 4 intervals with the initial condition of Ψ(1.0) = 1.0.
 
@@ -359,8 +361,9 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; fini
 Ψ(4.9000) =  -0.0246 + 1.7460i   vs  -0.0246 + 1.7460i   -- error: 3.1972e-11
 Ψ(4.9500) =   0.3716 + 1.4556i   vs   0.3716 + 1.4556i   -- error: 3.0820e-11
 MAX ERROR: 8.8435e-11
-ok
-test test_solving_ode ...
+test ode_solving_via_bridges ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.05s
 ```
 **Systems of Equations Solved:**
 
