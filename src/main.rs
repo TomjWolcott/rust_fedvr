@@ -1,7 +1,4 @@
 use lapack::c64;
-use lapack::fortran::zunmtr;
-use rgsl::ComplexF64;
-use rgsl::numerical_differentiation::deriv_central;
 use crate::complex_wrapper::{Complex, ComplexMatrix, ComplexVector, E, I, ONE, ZERO};
 use crate::gauss_quadrature::gauss_lobatto_quadrature;
 
@@ -37,6 +34,7 @@ fn lagrange_deriv(xs: &Vec<f64>, i: usize, mut x: f64) -> f64 {
 
 #[test]
 fn test_solving_ode_at_once() {
+    // (0) Define the parameters
     let num_quad_points = 80;
     let (t_i, t_f) = (0.0, 5.0);
     let quad_points = gauss_lobatto_quadrature(num_quad_points, t_i, t_f);
@@ -80,7 +78,7 @@ fn test_solving_ode_at_once() {
         matrix.data[index] = l(j, t_0).into();
     }
 
-    // (3) Print out the solution
+    // (3) Solve the systems of equations
     let result = matrix.solve_systems(vector.clone()).unwrap();
 
     println!("\nSystems of eqs:");
@@ -89,7 +87,7 @@ fn test_solving_ode_at_once() {
     // println!("Vector (b_i): {:?}", vector);
     // println!("Result (c_j): {:?}\n", result);
 
-    // (4) Compute error
+    // (4) Test Accuracy
     let exp_at_init = E.pow(-I * t_0.powi(2) / 2.0);
     let psi_expected = |t: f64| ((psi_0 + 1.0) / exp_at_init) * E.pow(-I * t.powi(2) / 2.0) - 1.0;
     let psi_computed = |t| result.data.iter().enumerate()
@@ -97,7 +95,6 @@ fn test_solving_ode_at_once() {
         .sum::<Complex>();
 
     let mut err_max: f64 = 0.0;
-    let num_tests = 201;
 
     println!("Ψ(______) =       Expected       vs       Computed      ");
 
@@ -114,6 +111,7 @@ fn test_solving_ode_at_once() {
 
 #[test]
 fn many_interval_ode_solving() {
+    // (0) Define the parameters
     let (t_initial, t_final) = (0.0, 5.0);
     let delta_time = 1.25;
     let num_quad_points = 20;
@@ -190,9 +188,10 @@ fn many_interval_ode_solving() {
         ts.iter_mut().for_each(|t| *t += delta_time);
     }
 
+    // (4) Test Accuracy
     let psi_computed = |t: f64| {
         if !(t_initial <= t && t < t_final) { panic!("t: {t} is out of bounds"); }
-        let index = ((t - t_0) / delta_time) as usize;
+        let index = ((t - t_initial) / delta_time) as usize;
 
         intervals_coefficients[index].iter()
             .enumerate()
@@ -222,13 +221,14 @@ fn many_interval_ode_solving() {
 
 #[test]
 fn ode_solving_via_bridges() {
+    // (0) Define the parameters
     let (t_initial, t_final) = (0.0, 5.0);
     let n = 20;
     let num_intervals = 4;
     let (t_0, psi_0) = (1.0, Complex::from(1.0));
 
     let delta_time = (t_final - t_initial) / (num_intervals as f64);
-    let mut quad_points = gauss_lobatto_quadrature(n, t_initial, t_initial + delta_time);
+    let quad_points = gauss_lobatto_quadrature(n, t_initial, t_initial + delta_time);
     let ws: Vec<f64> = quad_points.iter().map(|&(_, w)| w).collect();
     let ts: Vec<Vec<f64>> = (0..num_intervals)
         .map(|q| quad_points.iter().map(|&(t, _)| t + q as f64 * delta_time).collect())
@@ -281,7 +281,7 @@ fn ode_solving_via_bridges() {
             vector.data[i_index] = b_i.into();
 
             // The lapack functions assume column major order
-            for (j, &w_j) in ws.iter().enumerate() {
+            for j in 0..n {
                 let j_index = q * (n-1) + j;
 
                 let m_i_j = if q != 0 && i == 0 && j == 0 {

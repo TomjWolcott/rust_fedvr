@@ -2,7 +2,7 @@ use rgsl::types::ComplexF64;
 use std::{iter::Sum, ops::*};
 use std::f64::consts::PI;
 use std::fmt::Debug;
-use colored::{Color, Colorize};
+use colored::Colorize;
 use colors_transform::{Color as ColorTransform, Hsl};
 use lapack::c64;
 use lapack::fortran::zgesv;
