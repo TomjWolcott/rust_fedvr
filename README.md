@@ -14,6 +14,29 @@ Once this is done, run `cargo test test_solving_ode_at_once --release -- --nocap
 `cargo test --release -- --nocapture --test-threads=1` to run all tests.  If you want to modify the code and play around with the functions, you'll likely want to comment 
 out `println!("\nSystems of eqs:"); matrix.print_fancy_with(&result, &vector);` as it was largely meant for debugging and does not affect the rest of the program.
 
+## Using `solve_ode_with_intervals`
+This is the most generic version of the code, meant to work with most 1D ODEs.  To use it you must solve for $`M_{i,j}`$ and $`b_i`$ by: 
+1. Subsitute the function $`\Psi(t)`$ for $`\sum_{j}c^q_jl^q_j(t)`$ in the differential equation, where $`l^q_j(t) = \mathscr{L}^q_j(t)`$ ($`\mathscr{L}^q`$ is the lagrange polynomial for the qth set of quadrature points) and $`l^q_0(t) = \mathscr{L}^q_0(t) + \mathscr{L}^{q-1}_{n-1}(t)`$ and $`l^q_{n-1}(t) = \mathscr{L}^q_{n-1}(t) + \mathscr{L}^{q+1}_{0}(t)`$ to bridge subintervals.
+2. Multiply by $`l^q_i(t)`$ on the left on both sides
+3. Integrate with respect to t on both sides and simplify
+
+For the simple ODE studied here: $`\left[ i \frac{\partial}{\partial t}-t \right ]\psi(t) = t`$ you end up with: 
+
+```math
+\begin{align}
+M_{i,j} & = i w_i {\mathscr{L}^{q}_{j}}'(t^{q}_i) - \delta_{i,j} w_i t^q_i\\
+M_{0,0} &= -w_0 t^q_0 \\
+M_{n-1,n-1} &= -w_{n-1} t^q_{n-1}
+\end{align}
+```
+where $`M_{0,0}`$ and $`M_{n-1,n-1}`$ are for bridge functions.
+
+```math
+\begin{align}
+b_i = w_i t^q_i
+\end{align}
+```
+
 ## Systems of Equations Visualizations
 Largely to help with debugging, the systems of equations solved are printed out in the terminal as grids of colored blocks where each 
 block: `██` is an element in the matrix/vector, the hue represents the complex phase (+1 = red, +i = green, -1 = cyan, -i = purple), and the brightness represents the magnitude on a log10 scale.
