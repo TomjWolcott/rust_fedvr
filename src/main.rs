@@ -32,6 +32,20 @@ fn lagrange_deriv(xs: &Vec<f64>, i: usize, mut x: f64) -> f64 {
     }
 }
 
+fn lagrange_deriv_deriv(xs: &Vec<f64>, i: usize, mut x: f64) -> f64 {
+    if xs[0] - 1e-8 <= x && x <= *xs.last().unwrap() + 1e-8 {
+        x += 1e-12;
+
+        lagrange(xs, i, x) * xs.iter().enumerate().map(|(j1, &x_j1)| {
+            xs.iter().enumerate().map(|(j2, &x_j2)| {
+                if i == j1 || j1 == j2 { 0.0 } else { 1.0 / (x - x_j1) / (x - x_j2) }
+            }).sum::<f64>()
+        }).sum::<f64>()
+    } else {
+        0.0
+    }
+}
+
 #[test]
 fn test_solving_ode_at_once() {
     // (0) Define the parameters
@@ -350,6 +364,237 @@ fn ode_solving_via_bridges() {
     });
 
     println!("MAX ERROR: {:.4e}", err_max);
+}
+
+#[test]
+fn solve_simple_with_abstraction() {
+    let (t_initial, t_final) = (0.0, 50.0);
+    let (t_0, psi_0) = (0.0, Complex::new(1.0, 0.0));
+
+    let psi_computed = solve_ode_with_intervals(
+        t_initial, t_final,
+        100, 30, 3,
+        t_0, psi_0,
+        |q, i, ts, ws| {
+            ws[i] * ts[q][i]
+        },
+        |q, i, j, ts, ws| {
+            let l_prime_prev = if q != 0 && i == 0 && j == 0 {
+                lagrange_deriv(&ts[q-1], ts[0].len() - 1, ts[q-1][ts[0].len() - 1])
+            } else { 0.0 };
+            let l_prime_next = if q != ts.len() - 1 && i == ts[0].len() - 1 && j == ts[0].len() - 1 {
+                lagrange_deriv(&ts[q+1], 0, ts[q+1][0])
+            } else { 0.0 };
+
+            I * ws[i] * (l_prime_prev + lagrange_deriv(&ts[q], j, ts[q][i]) + l_prime_next)
+                - ws[i] * if i == j { ts[q][i] } else { 0.0 }
+        }
+    );
+
+    let exp_at_init = E.pow(-I * t_0.powi(2) / 2.0);
+    let psi_expected = |t: f64| {
+        ((psi_0 + 1.0) / exp_at_init) * E.pow(-I * t.powi(2) / 2.0) - 1.0
+    };
+
+    let mut err_max: f64 = 0.0;
+
+    println!("Ψ(______) =       Expected       vs       Computed      ");
+
+    sample(1000, t_initial, t_final, |t| {
+        let expected = psi_expected(t);
+        let computed = psi_computed(t);
+        let err = (expected - computed).magnitude();
+        println!("Ψ({t:.4}) = {: ^20} vs {: ^20} -- error: {err:.4e}", expected.to_string(), computed.to_string());
+        err_max = err_max.max(err);
+    });
+
+    println!("MAX ERROR: {:.4e}", err_max);
+}
+
+#[test]
+fn solve_simple_homogeneous_with_abstraction() {
+    let (t_initial, t_final) = (0.0, 50.0);
+    let (t_0, psi_0) = (0.0, Complex::new(1.0, 0.0));
+
+    let psi_computed = solve_ode_with_intervals(
+        t_initial, t_final,
+        100, 30, 3,
+        t_0, psi_0,
+        |q, i, ts, ws| {
+            0.0
+        },
+        |q, i, j, ts, ws| {
+            let l_prime_prev = if q != 0 && i == 0 && j == 0 {
+                lagrange_deriv(&ts[q-1], ts[0].len() - 1, ts[q-1][ts[0].len() - 1])
+            } else { 0.0 };
+            let l_prime_next = if q != ts.len() - 1 && i == ts[0].len() - 1 && j == ts[0].len() - 1 {
+                lagrange_deriv(&ts[q+1], 0, ts[q+1][0])
+            } else { 0.0 };
+
+            I * ws[i] * (l_prime_prev + lagrange_deriv(&ts[q], j, ts[q][i]) + l_prime_next)
+                - ws[i] * if i == j { ts[q][i] } else { 0.0 }
+        }
+    );
+
+    let exp_at_init = E.pow(-I * t_0.powi(2) / 2.0);
+    let psi_expected = |t: f64| {
+        (psi_0 / exp_at_init) * E.pow(-I * t.powi(2) / 2.0)
+    };
+
+    let mut err_max: f64 = 0.0;
+
+    println!("Ψ(______) =       Expected       vs       Computed      ");
+
+    sample(1000, t_initial, t_final, |t| {
+        let expected = psi_expected(t);
+        let computed = psi_computed(t);
+        let err = (expected - computed).magnitude();
+        println!("Ψ({t:.4}) = {: ^20} vs {: ^20} -- error: {err:.4e}", expected.to_string(), computed.to_string());
+        err_max = err_max.max(err);
+    });
+
+    println!("MAX ERROR: {:.4e}", err_max);
+}
+
+fn solve_ode_with_intervals<T1: Into<c64>, T2: Into<c64>>(
+    t_initial: f64, t_final: f64,
+    num_intervals: usize,
+    n: usize, nq: usize,
+    mut t_0: f64, mut f_0: Complex,
+    b_i: impl Fn(usize, usize, &Vec<Vec<f64>>, &Vec<f64>) -> T1,
+    m_i_j: impl Fn(usize, usize, usize, &Vec<Vec<f64>>, &Vec<f64>) -> T2
+) -> impl Fn(f64) -> Complex {
+    let mut funcs:Vec<Box<dyn Fn(f64) -> Complex + 'static>> = Vec::new();
+    let delta_time = (t_final - t_initial) / (num_intervals as f64);
+
+    for i in 0..num_intervals {
+        let t_start = t_initial + delta_time * i as f64;
+        let t_end = t_initial + delta_time * (i + 1) as f64;
+
+        let f = solve_ode(
+            t_start, t_end,
+            n, nq,
+            t_0, f_0,
+            &b_i, &m_i_j
+        );
+
+        t_0 = t_end;
+        f_0 = f(t_end);
+
+        funcs.push(Box::new(f));
+    }
+
+    move |t: f64| {
+        if !(t_initial - 1e-8 <= t && t <= t_final + 1e-8) { panic!("t: {t} is out of bounds"); }
+        let i = ((t - t_initial) / delta_time) as usize;
+
+        funcs[i](t)
+    }
+}
+
+fn solve_ode<T1: Into<c64>, T2: Into<c64>>(
+    t_initial: f64, t_final: f64,
+    n: usize, nq: usize,
+    t_0: f64, f_0: Complex,
+    b_i: impl Fn(usize, usize, &Vec<Vec<f64>>, &Vec<f64>) -> T1,
+    m_i_j: impl Fn(usize, usize, usize, &Vec<Vec<f64>>, &Vec<f64>) -> T2
+) -> impl Fn(f64) -> Complex + 'static {
+    let delta_time = (t_final - t_initial) / (nq as f64);
+    let quad_points = gauss_lobatto_quadrature(n, t_initial, t_initial + delta_time);
+    let ws: Vec<f64> = quad_points.iter().map(|&(_, w)| w).collect();
+    let ts: Vec<Vec<f64>> = (0..nq)
+        .map(|q| quad_points.iter().map(|&(t, _)| t + q as f64 * delta_time).collect())
+        .collect();
+
+    let dims = n * nq - nq + 1;
+    let ts_clone = ts.clone();
+    let l = move |index, t| {
+        // Gets the interval and the index within the interval
+        let (q, i) = if index == 0 {
+            (0, 0)
+        } else if index == dims-1 {
+            (nq-1, n-1)
+        } else {
+            ((index - 1) / (n-1), (index - 1) % (n-1) + 1)
+        };
+
+        if index != 0 && i == 0 && t < ts_clone[q][i] {
+            lagrange(&ts_clone[q-1], n-1, t) // l^q_0 bridge, use the lagrange in the previous interval
+        } else if index != dims-1 && i == n-1 && ts_clone[q][i] < t {
+            lagrange(&ts_clone[q+1], 0, t) // l^q_{n-1} bridge, use the lagrange in the next interval
+        } else {
+            lagrange(&ts_clone[q], i, t) // Use the lagrange in the current interval
+        }
+    };
+
+    let mut matrix = ComplexMatrix {
+        data: vec![ZERO.into(); dims.pow(2)],
+        rows: dims,
+        cols: dims
+    };
+
+    let mut vector = ComplexVector {
+        data: vec![ZERO.into(); dims]
+    };
+
+    // (1) Set up the problem
+    for q in 0..nq {
+        for (i, (&t_i, &w_i)) in ts[q].iter().zip(ws.iter()).enumerate() {
+            let i_index = q * (n-1) + i;
+            let boundary_multiplier =  if (q != 0 && i == 0) || (q != nq-1 && i == n-1) {
+                2.0
+            } else {
+                1.0
+            };
+
+            vector.data[i_index] = boundary_multiplier * b_i(q, i, &ts, &ws).into();
+
+            // The lapack functions assume column major order
+            for j in 0..n {
+                let j_index = q * (n-1) + j;
+                let boundary_multiplier =  if (q != 0 && i == 0 && j == 0) || (q != nq-1 && i == n-1 && j == n-1) {
+                    2.0
+                } else {
+                    1.0
+                };
+
+                matrix.data[i_index + j_index * matrix.rows] = boundary_multiplier * m_i_j(q, i, j, &ts, &ws).into();
+            }
+        }
+    }
+
+    // (2) Set up the initial conditions
+    vector.data[0] = f_0.into();
+
+    for index in 0..dims {
+        matrix.data[index * matrix.rows] = l(index, t_0).into();
+    }
+
+    // (3) Solve the systems of equations
+    let result = match matrix.solve_systems(vector.clone()) {
+        Ok(result) => result,
+        Err(err) => {
+            println!("Matrix fancy:");
+            matrix.print_fancy();
+            println!("\nMatrix (M_{{i,j}}):\n{:?}", matrix);
+            println!("Vector (b_i): {:?}", vector);
+            panic!("Error while trying to solve the systems of equations: {:?}\n", err);
+        }
+    };
+
+    // println!("\nSystems of eqs:");
+    // matrix.print_fancy_with(&result, &vector);
+    // println!("\nMatrix (M_{{i,j}}):\n{:?}", matrix);
+    // println!("Vector (b_i): {:?}", vector);
+    // println!("Result (c_j): {:?}\n", result);
+
+    move |t: f64| {
+        if !(t_initial - 1e-8 <= t && t <= t_final + 1e-1) { panic!("t: {t} is out of bounds"); }
+
+        (0..dims).map(|index| {
+            (result.data[index] * l(index, t)).into()
+        }).sum::<Complex>()
+    }
 }
 
 fn sample(num_samples: usize, from: f64, to: f64, mut func: impl FnMut(f64)) {

@@ -138,6 +138,14 @@ impl Sub<f64> for Complex {
     }
 }
 
+impl Sub<Complex> for f64 {
+    type Output = Complex;
+
+    fn sub(self, rhs: Complex) -> Complex {
+        Complex(ComplexF64 { dat: [self, 0.0] }) - rhs
+    }
+}
+
 impl Mul for Complex {
     type Output = Self;
 
