@@ -379,15 +379,14 @@ fn solve_simple_with_abstraction() {
             ws[i] * ts[q][i]
         },
         |q, i, j, ts, ws| {
-            let l_prime_prev = if q != 0 && i == 0 && j == 0 {
-                lagrange_deriv(&ts[q-1], ts[0].len() - 1, ts[q-1][ts[0].len() - 1])
-            } else { 0.0 };
-            let l_prime_next = if q != ts.len() - 1 && i == ts[0].len() - 1 && j == ts[0].len() - 1 {
-                lagrange_deriv(&ts[q+1], 0, ts[q+1][0])
-            } else { 0.0 };
-
-            I * ws[i] * (l_prime_prev + lagrange_deriv(&ts[q], j, ts[q][i]) + l_prime_next)
-                - ws[i] * if i == j { ts[q][i] } else { 0.0 }
+            if q != 0 && i == 0 && j == 0 {
+                -ws[i] * ts[q][i] * ONE
+            } else if q != ts.len() - 1 && i == ts[0].len() - 1 && j == ts[0].len() - 1 {
+                -ws[i] * ts[q][i] * ONE
+            } else {
+                I * ws[i] * lagrange_deriv(&ts[q], j, ts[q][i])
+                    - ws[i] * if i == j { ts[q][i] } else { 0.0 }
+            }
         }
     );
 
@@ -424,15 +423,14 @@ fn solve_simple_homogeneous_with_abstraction() {
             0.0
         },
         |q, i, j, ts, ws| {
-            let l_prime_prev = if q != 0 && i == 0 && j == 0 {
-                lagrange_deriv(&ts[q-1], ts[0].len() - 1, ts[q-1][ts[0].len() - 1])
-            } else { 0.0 };
-            let l_prime_next = if q != ts.len() - 1 && i == ts[0].len() - 1 && j == ts[0].len() - 1 {
-                lagrange_deriv(&ts[q+1], 0, ts[q+1][0])
-            } else { 0.0 };
-
-            I * ws[i] * (l_prime_prev + lagrange_deriv(&ts[q], j, ts[q][i]) + l_prime_next)
-                - ws[i] * if i == j { ts[q][i] } else { 0.0 }
+            if q != 0 && i == 0 && j == 0 {
+                -ws[i] * ts[q][i] * ONE
+            } else if q != ts.len() - 1 && i == ts[0].len() - 1 && j == ts[0].len() - 1 {
+                -ws[i] * ts[q][i] * ONE
+            } else {
+                I * ws[i] * lagrange_deriv(&ts[q], j, ts[q][i])
+                    - ws[i] * if i == j { ts[q][i] } else { 0.0 }
+            }
         }
     );
 
