@@ -1,7 +1,6 @@
 # Finite Element Discrete Variable Representation for a simple 1D ODE in Rust
 ## Running the code
-To run the code, first install [rust](https://www.rust-lang.org/learn/get-started) and then follow [these instructions](https://docs.rs/GSL/latest/rgsl/index.html) to download GSL.  
-Next clone this repository and navigate to the `cargo.toml` file, change "accelerate" in lapack's features list to one of the following:
+To run the code, first install [rust](https://www.rust-lang.org/learn/get-started) and then follow [these instructions](https://docs.rs/GSL/latest/rgsl/index.html) to download GSL.  Next clone this repository and navigate to the `cargo.toml` file, change "accelerate" in lapack's features list to one of the following:
 |  OS | feature |
 |-----|-------|
 | MacOS | `"accelerate"` |
