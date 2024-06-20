@@ -5,7 +5,7 @@ use std::fmt::Debug;
 use colored::Colorize;
 use colors_transform::{Color as ColorTransform, Hsl};
 use lapack::c64;
-use lapack::fortran::zgesv;
+use lapack::fortran::{zgeev, zgesv};
 
 /// This is a wrapper around rgsl::types::ComplexF64, so I can use operator overloading on complex numbers
 #[derive(Clone, Copy)]
@@ -110,9 +110,23 @@ impl Add<f64> for Complex {
     }
 }
 
+impl Add<Complex> for f64 {
+    type Output = Complex;
+
+    fn add(self, rhs: Complex) -> Complex {
+        Complex(ComplexF64 { dat: [self, 0.0] }) + rhs
+    }
+}
+
 impl AddAssign for Complex {
     fn add_assign(&mut self, rhs: Self) {
         *self = *self + rhs
+    }
+}
+
+impl AddAssign<Complex> for c64 {
+    fn add_assign(&mut self, rhs: Complex) {
+        *self = *self + <Complex as Into<c64>>::into(rhs)
     }
 }
 
@@ -224,6 +238,24 @@ impl Complex {
     pub fn conj(self) -> Self {
         Self(self.0.conjugate())
     }
+
+    pub fn rgb(&self) -> (u8, u8, u8) {
+        let hue = (360.0 * (self.arg() / (2.0 * PI) + 0.5) + 180.0) % 360.0;
+        let (r, g, b) = if self.magnitude() == 0.0 {
+            (40.0, 40.0, 40.0)
+        } else {
+            Hsl::from(hue as f32, 80.0, 5.0 * (self.magnitude().log10() + 3.0) as f32).to_rgb().as_tuple()
+        };
+
+        ((2.55 * r) as u8, (2.55 * g) as u8, (2.55 * b) as u8)
+    }
+
+    pub fn rgb_just_hue(&self) -> (u8, u8, u8) {
+        let hue = (360.0 * (self.arg() / (2.0 * PI) + 0.5) + 180.0) % 360.0;
+        let (r, g, b) = Hsl::from(hue as f32, 80.0, 20.0).to_rgb().as_tuple();
+
+        ((2.55 * r) as u8, (2.55 * g) as u8, (2.55 * b) as u8)
+    }
 }
 
 impl Deref for Complex {
@@ -303,6 +335,34 @@ impl ComplexMatrix {
         }
     }
 
+    pub fn eigenvalues(&self) -> Result<Vec<Complex>, LapackError> {
+        let mut info = 0;
+        let mut eigenvalues = vec![c64::new(0.0, 0.0); self.rows];
+
+        zgeev(
+            'N' as u8,
+            'N' as u8,
+            self.rows as i32,
+            &mut self.data.clone()[..],
+            self.rows as i32,
+            &mut eigenvalues[..],
+            &mut [],
+            1,
+            &mut [],
+            1,
+            &mut vec![0.0.into(); self.rows * 2],
+            (self.rows * 2) as i32,
+            &mut vec![0.0.into(); self.rows * 2],
+            &mut info
+        );
+
+        match info {
+            0 => Ok(eigenvalues.iter().map(|&z| Complex::from(z)).collect()),
+            n @ ..=-1 => Err(LapackError { info, message: format!("Illegal value in argument {}", -n) }),
+            n => Err(LapackError { info, message: format!("The QR algorithm failed to compute all the eigenvalues, and no eigenvectors have been computed; elements and {}+1:{} of W contain eigenvalues which have converged.", n, self.rows) }),
+        }
+    }
+
     pub fn print_fancy(&self) {
         for i in 0..self.cols {
             for j in 0..self.rows {
@@ -350,14 +410,9 @@ impl ComplexMatrix {
                     _ => "██"
                 };
 
-                let hue = (360.0 * (z.arg() / (2.0 * PI) + 0.5) + 180.0) % 360.0;
-                let (r, g, b) = if z.magnitude() == 0.0 {
-                    (40.0, 40.0, 40.0)
-                } else {
-                    Hsl::from(hue as f32, 100.0, 5.0 * (z.magnitude().log10() + 3.0) as f32).to_rgb().as_tuple()
-                };
+                let (r, g, b) = z.rgb();
 
-                print!("{}", str.truecolor((2.55 * r) as u8, (2.55 * g) as u8, (2.55 * b) as u8));
+                print!("{}", str.truecolor(r, g, b));
             }
 
             println!();

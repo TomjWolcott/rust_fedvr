@@ -4,6 +4,7 @@ use crate::gauss_quadrature::gauss_lobatto_quadrature;
 
 mod gauss_quadrature;
 mod complex_wrapper;
+mod schrodinger;
 
 fn main() {
 
@@ -37,13 +38,26 @@ fn lagrange_deriv_deriv(xs: &Vec<f64>, i: usize, mut x: f64) -> f64 {
         x += 1e-12;
 
         lagrange(xs, i, x) * xs.iter().enumerate().map(|(j1, &x_j1)| {
-            xs.iter().enumerate().map(|(j2, &x_j2)| {
-                if i == j1 || j1 == j2 { 0.0 } else { 1.0 / (x - x_j1) / (x - x_j2) }
+            xs.iter().enumerate().skip(j1+1).map(|(j2, &x_j2)| {
+                if i != j1 && i != j2 && j1 < j2  { 2.0 / (x - x_j1) / (x - x_j2) } else { 0.0 }
             }).sum::<f64>()
         }).sum::<f64>()
     } else {
         0.0
     }
+}
+
+#[test]
+fn test_lagrange_and_derivs() {
+    let xs = vec![0.0, 1.0, 2.0, 3.0, 4.0];
+    let x = 2.5;
+
+    for i in 0..xs.len() {
+        println!("L_{i}({}) = {}", x, lagrange(&xs, i, x));
+        println!("L_{i}'({}) = {}", x, lagrange_deriv(&xs, i, x));
+        println!("L_{i}''({}) = {}", x, lagrange_deriv_deriv(&xs, i, x));
+    }
+
 }
 
 #[test]
@@ -419,7 +433,7 @@ fn solve_simple_homogeneous_with_abstraction() {
         t_initial, t_final,
         100, 30, 3,
         t_0, psi_0,
-        |q, i, ts, ws| {
+        |_q, _i, _ts, _ws| {
             0.0
         },
         |q, i, j, ts, ws| {
@@ -537,7 +551,7 @@ fn solve_ode<T1: Into<c64>, T2: Into<c64>>(
 
     // (1) Set up the problem
     for q in 0..nq {
-        for (i, (&t_i, &w_i)) in ts[q].iter().zip(ws.iter()).enumerate() {
+        for i in 0..n {
             let i_index = q * (n-1) + i;
             let boundary_multiplier =  if (q != 0 && i == 0) || (q != nq-1 && i == n-1) {
                 2.0
@@ -594,6 +608,7 @@ fn solve_ode<T1: Into<c64>, T2: Into<c64>>(
         }).sum::<Complex>()
     }
 }
+
 
 fn sample(num_samples: usize, from: f64, to: f64, mut func: impl FnMut(f64)) {
     let step = (to - from) / num_samples as f64;
