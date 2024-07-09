@@ -6,7 +6,7 @@ use plotly::common::{Line, Mode};
 use crate::complex_wrapper::{Complex, LapackError, ONE};
 use crate::gauss_quadrature::gauss_lobatto_quadrature;
 use crate::{lagrange, lagrange_deriv};
-
+/*
 #[derive(Clone)]
 pub struct Tdse1dOptions {
     initial_time_settings: Option<(f64, Vec<Complex>)>,
@@ -98,7 +98,7 @@ impl Default for Tdse1dOptions {
         }
     }
 }
-
+*/
 pub fn ground_state(
     n_x: usize, x_initial: f64, x_final: f64,
     potential: &impl Fn(f64) -> f64
