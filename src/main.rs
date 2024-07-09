@@ -1,10 +1,19 @@
+use std::fs::write;
+use itertools::MultiUnzip;
 use lapack::c64;
+use plotly::common::{Marker, Mode, Title};
+use plotly::traces::Scatter3D;
+use plotly::{Configuration, Contour, Layout, Mesh3D, Plot};
+use plotly::layout::Axis;
+use rand::Rng;
+use rayon::prelude::{ParallelSliceMut, ParallelIterator, IndexedParallelIterator};
 use crate::complex_wrapper::{Complex, ComplexMatrix, ComplexVector, E, I, ONE, ZERO};
 use crate::gauss_quadrature::gauss_lobatto_quadrature;
 
 mod gauss_quadrature;
 mod complex_wrapper;
 mod schrodinger;
+mod tdse_1d;
 
 fn main() {
 
@@ -23,11 +32,19 @@ fn lagrange(xs: &Vec<f64>, i: usize, x: f64) -> f64 {
 
 fn lagrange_deriv(xs: &Vec<f64>, i: usize, mut x: f64) -> f64 {
     if xs[0] - 1e-8 <= x && x <= *xs.last().unwrap() + 1e-8 {
-        x += 1e-12;
+        x += 5e-14;
 
-        lagrange(xs, i, x) * xs.iter().enumerate().map(|(j, &x_j)| {
+        let l1 = lagrange(xs, i, x) * xs.iter().enumerate().map(|(j, &x_j)| {
             if i == j { 0.0 } else { 1.0 / (x - x_j) }
-        }).sum::<f64>()
+        }).sum::<f64>();
+
+        x -= 1e-13;
+
+        let l2 = lagrange(xs, i, x) * xs.iter().enumerate().map(|(j, &x_j)| {
+            if i == j { 0.0 } else { 1.0 / (x - x_j) }
+        }).sum::<f64>();
+
+        (l1 + l2) / 2.0
     } else {
         0.0
     }
@@ -382,15 +399,15 @@ fn ode_solving_via_bridges() {
 
 #[test]
 fn solve_simple_with_abstraction() {
-    let (t_initial, t_final) = (0.0, 50.0);
+    let (t_initial, t_final) = (0.0, 25.0);
     let (t_0, psi_0) = (0.0, Complex::new(1.0, 0.0));
 
     let psi_computed = solve_ode_with_intervals(
         t_initial, t_final,
-        100, 30, 3,
+        25, 100, 1,
         t_0, psi_0,
         |q, i, ts, ws| {
-            ws[i] * ts[q][i]
+            0.0
         },
         |q, i, j, ts, ws| {
             if q != 0 && i == 0 && j == 0 {
@@ -406,7 +423,7 @@ fn solve_simple_with_abstraction() {
 
     let exp_at_init = E.pow(-I * t_0.powi(2) / 2.0);
     let psi_expected = |t: f64| {
-        ((psi_0 + 1.0) / exp_at_init) * E.pow(-I * t.powi(2) / 2.0) - 1.0
+        (psi_0 / exp_at_init) * E.pow(-I * t.powi(2) / 2.0)
     };
 
     let mut err_max: f64 = 0.0;
@@ -422,6 +439,170 @@ fn solve_simple_with_abstraction() {
     });
 
     println!("MAX ERROR: {:.4e}", err_max);
+}
+
+#[test]
+fn plot_convergence() {
+    let (t_0, psi_0) = (0.0, Complex::new(1.0, 0.0));
+    let num_iters = 196;
+    let chunk_size = num_iters / 31;
+    let num_x = (num_iters as f64).sqrt() as usize;
+    let mut plot = Plot::new();
+    plot.set_configuration(Configuration::new().fill_frame(true));
+    let mut axes = String::new();
+    let num_plots = 10;
+
+    for l in 0..num_plots {
+        let mut points = vec![(0f64, 0f64, 0f64); num_iters];
+        let t_final = (12.5 * l as f64).max(1.0);
+
+        println!("starting t_final: {t_final}");
+
+        points.par_chunks_mut(chunk_size).enumerate()
+            .for_each(|(i, slice)| {
+                // let mut rng = rand::thread_rng();
+
+                for (j, (x, y, z)) in slice.iter_mut().enumerate() {
+                    let index = i * chunk_size + j;
+
+                    let num_intervals = 100 * (index / num_x) / num_x + 1;
+                    let n = 150 * (index % num_x) / num_x + 3;
+
+                    println!("    t_final: {}, num_intervals: {}, n: {}", t_final, num_intervals, n);
+
+                    let psi_computed = solve_ode_with_intervals(
+                        0.0, t_final,
+                        num_intervals, n, 1,
+                        t_0, psi_0,
+                        |q, i, ts, ws| {
+                            ws[i] * ts[q][i]
+                        },
+                        |q, i, j, ts, ws| {
+                            if q != 0 && i == 0 && j == 0 {
+                                -ws[i] * ts[q][i] * ONE
+                            } else if q != ts.len() - 1 && i == ts[0].len() - 1 && j == ts[0].len() - 1 {
+                                -ws[i] * ts[q][i] * ONE
+                            } else {
+                                I * ws[i] * lagrange_deriv(&ts[q], j, ts[q][i])
+                                    - ws[i] * if i == j { ts[q][i] } else { 0.0 }
+                            }
+                        }
+                    );
+
+                    let exp_at_init = E.pow(-I * t_0.powi(2) / 2.0);
+                    let psi_expected = |t: f64| {
+                        ((psi_0 + 1.0) / exp_at_init) * E.pow(-I * t.powi(2) / 2.0) - 1.0
+                    };
+
+                    *x = num_intervals as f64;
+                    *y = n as f64;
+                    *z = (0..20).map(|k| {
+                        let t = t_final - k as f64 / (100.0 * t_final) - 0.001;
+                        let expected = psi_expected(t);
+                        let computed = psi_computed(t);
+                        (expected - computed).magnitude()
+                    }).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().log10();
+                }
+            });
+
+        println!("finished");
+
+        let (xs, ys, errs): (Vec<f64>, Vec<f64>, Vec<f64>) = points.into_iter().multiunzip();
+
+        let trace = Contour::new(xs, ys, errs)
+            .name(format!("t_final = {t_final}").as_str())
+            .x_axis(format!("x{}", l + 1).as_str())
+            .y_axis(format!("y{}", l + 1).as_str())
+            .zmin(-14.0).zmax(1.0);
+
+        axes.push_str(format!("
+            xaxis{n}: {{title: {{ text: \"num intervals\" }} }}, \
+            yaxis{n}: {{ title: {{ text: \"n\" }} }}, \
+            zaxis{n}: {{ title: {{ text: \"log(err)\" }}, range: [-14, 1] }},\
+        ", n=if l == 0 { "".to_string() } else { format!("{}", l+1) }).as_str());
+
+        plot.add_trace(trace);
+    }
+
+    let mut html = plot.to_html();
+    html = html.replace("<body>", "<body style=\"height: 100%\">")
+        .replace("\"layout\": {", format!("\"layout\": {{\
+            title: {{ text: \"Error vs number of intervals and quadrature points used\" }}, \
+            {axes}
+            grid: {{rows: {}, columns: {}, pattern: 'independent'}},
+
+      height: 1000,
+      width: 1100,
+      margin: {{
+          l: 50,
+          r: 50,
+          b: 50,
+          t: 50,
+          pad: 5
+      }},
+        ", (num_plots as f64).sqrt().ceil(), (num_plots as f64).sqrt().ceil()).as_str());
+
+    write("output/simple_ode_convergence_tfinal_and_n.html", html).unwrap();
+
+}
+
+#[test]
+fn compare_to_paper() {
+    let inputs = [
+        (0.1, 3, 7.81e-7, 7.81e-7, 7.81e-7, 7.81e-7),
+        (0.1, 6, 8.96e-13, 8.94e-13, 1.89e-8, 2.48e-8),
+        (0.1, 12, 8.79e-13, 8.79e-13, f64::INFINITY, 1.12e-12),
+        (1.0, 5, 4.66e-5, 4.66e-5, 4.66e-5, 4.66e-5),
+        (1.0, 15, 1.48e-12, 2.82e-14, f64::INFINITY, 5.87e-14),
+        (1.0, 30, 1.45e-12, 5.6e-14, f64::INFINITY, 8.22e-14),
+    ]; // Compared to midpoint/gauss-seidel
+    let t_final = 25.0;
+
+    println!(" delta_t       | n             | mine -- fedvr | jacobi        | gauss-seidel  | power-exp     | dvr           ");
+    println!("---------------|---------------|---------------|---------------|---------------|---------------|---------------");
+
+    for (interval_step, num_quad_points, jacobi_err, gauss_seidel_err, power_exp_err, dvr_err) in inputs {
+        let num_intervals = (t_final / interval_step) as usize;
+
+        let psi_computed = solve_ode_with_intervals(
+            0.0, t_final,
+            num_intervals, num_quad_points, 1,
+            0.0, Complex::new(1.0, 0.0),
+            |q, i, ts, ws| {
+                0.0
+            },
+            |q, i, j, ts, ws| {
+                if q != 0 && i == 0 && j == 0 {
+                    -ws[i] * ts[q][i] * ONE
+                } else if q != ts.len() - 1 && i == ts[0].len() - 1 && j == ts[0].len() - 1 {
+                    -ws[i] * ts[q][i] * ONE
+                } else {
+                    I * ws[i] * lagrange_deriv(&ts[q], j, ts[q][i])
+                        - ws[i] * if i == j { ts[q][i] } else { 0.0 }
+                }
+            }
+        );
+
+        let psi_expected = |t: f64| {
+            (-I * t.powi(2) / 2.0).exp()
+        };
+        let max_err_at_end = (0..20).map(|k| {
+            let t = t_final - k as f64 / (100.0 * t_final) - 0.001;
+            let expected = psi_expected(t);
+            let computed = psi_computed(t);
+            (expected - computed).magnitude()
+        }).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+
+        println!(
+            " {: <13} | {: <13} | {: <13} | {: <13} | {: <13} | {: <13} | {: <13}",
+            interval_step, num_quad_points,
+            format!("{:.4e}", max_err_at_end),
+            format!("{:.4e}", jacobi_err),
+            format!("{:.4e}", gauss_seidel_err),
+            format!("{:.4e}", power_exp_err),
+            format!("{:.4e}", dvr_err)
+        );
+    }
 }
 
 #[test]
@@ -601,7 +782,7 @@ fn solve_ode<T1: Into<c64>, T2: Into<c64>>(
     // println!("Result (c_j): {:?}\n", result);
 
     move |t: f64| {
-        if !(t_initial - 1e-8 <= t && t <= t_final + 1e-1) { panic!("t: {t} is out of bounds"); }
+        if !(t_initial - 1e-8 <= t && t <= t_final + 1e-8) { panic!("t: {t} is out of bounds"); }
 
         (0..dims).map(|index| {
             (result.data[index] * l(index, t)).into()

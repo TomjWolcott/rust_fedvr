@@ -6,8 +6,12 @@ edition = "2021"
 [dependencies]
 GSL = "7.0.0"
 itertools = "0.13.0"
+rayon = "1.10.0"
 lapack = { version = "0.11.0", default-features = false, features = ["accelerate"] }
 colored = "2.1.0"
 colors-transform = "0.2.11"
 plotly = "0.8.4"
 faer_gmres = "0.0.4"
+thread-id = "4.2.1"
+rand = "0.8.4"
+sprs = "0.11.1"

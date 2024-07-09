@@ -1,15 +1,22 @@
 use rgsl::types::ComplexF64;
 use std::{iter::Sum, ops::*};
 use std::f64::consts::PI;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use colored::Colorize;
 use colors_transform::{Color as ColorTransform, Hsl};
 use lapack::c64;
-use lapack::fortran::{zgeev, zgesv};
+use lapack::fortran::{zgeev, zgesv, zgetrf, zgetri, zstein};
 
 /// This is a wrapper around rgsl::types::ComplexF64, so I can use operator overloading on complex numbers
 #[derive(Clone, Copy)]
 pub struct Complex(ComplexF64);
+
+impl Complex {
+    pub fn block(&self) -> String {
+        let (r, g, b) = self.rgb();
+        format!("{}", "██".truecolor(r, g, b))
+    }
+}
 
 impl Debug for Complex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -160,6 +167,12 @@ impl Sub<Complex> for f64 {
     }
 }
 
+impl SubAssign for Complex {
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+
 impl Mul for Complex {
     type Output = Self;
 
@@ -283,7 +296,7 @@ impl Debug for ComplexVector {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ComplexMatrix {
     pub data: Vec<c64>,
     pub rows: usize,
@@ -310,13 +323,29 @@ pub struct LapackError {
     pub message: String,
 }
 
+impl Mul<ComplexVector> for ComplexMatrix {
+    type Output = ComplexVector;
+
+    fn mul(self, rhs: ComplexVector) -> Self::Output {
+        let mut data = vec![ZERO.into(); self.rows];
+
+        for i in 0..self.rows {
+            for j in 0..self.cols {
+                data[i] += self.data[j * self.cols + i] * rhs.data[j];
+            }
+        }
+
+        ComplexVector { data }
+    }
+}
+
 impl ComplexMatrix {
     pub fn solve_systems(&self, b: ComplexVector) -> Result<ComplexVector, LapackError> {
         let mut b = b.data;
 
         let mut ipiv = vec![0; self.cols];
         let mut info = 0;
-
+        println!("CALLING zgesv");
         zgesv(
             self.cols as i32,
             1,
@@ -327,12 +356,81 @@ impl ComplexMatrix {
             self.cols as i32,
             &mut info
         );
+        println!("FINISHED zgesv");
 
         match info {
             0 => Ok(ComplexVector { data: b }),
             n @ ..=-1 => Err(LapackError { info, message: format!("Illegal value in argument {}", -n) }),
             n => Err(LapackError { info, message: format!("U({},{}) is exactly zero", n, n) }),
         }
+    }
+
+    pub fn inverse(mut self) -> Result<Self, LapackError> {
+        let mut info = 0;
+        let mut ipiv = vec![0; self.cols];
+        let mut work = vec![ZERO.into(); 1];
+
+        let thread_id = format!("{}", thread_id::get() % 1000).yellow();
+
+        zgetrf(
+            self.rows as i32,
+            self.cols as i32,
+            &mut self.data[..],
+            self.rows as i32,
+            &mut ipiv[..],
+            &mut info
+        );
+
+        if info < 0 {
+            return Err(LapackError { info, message: format!("Illegal value in argument {}", -info) });
+        } else if info > 0 {
+            return Err(LapackError { info, message: format!("U({},{}) is exactly zero", info, info) });
+        }
+
+        zgetri(
+            self.rows as i32,
+            &mut [][..],
+            self.rows as i32,
+            &mut [][..],
+            &mut work[..],
+            -1,
+            &mut info
+        );
+
+        if info != 0 {
+            return Err(LapackError { info, message: "Failed to retrieve lwork".to_string() });
+        }
+
+        let lwork = work[0].re as i32;
+        let mut work = vec![ZERO.into(); lwork as usize];
+
+        zgetri(
+            self.rows as i32,
+            &mut self.data[..],
+            self.rows as i32,
+            &mut ipiv[..],
+            &mut work[..],
+            lwork,
+            &mut info
+        );
+
+        match info {
+            0 => Ok(self),
+            n @ ..=-1 => Err(LapackError { info, message: format!("Illegal value in argument {}", -n) }),
+            n => Err(LapackError { info, message: format!("U({},{}) is exactly zero", n, n) }),
+        }
+    }
+
+    pub fn multiply_vector(&self, v: &ComplexVector) -> ComplexVector {
+        let mut data = vec![ZERO.into(); self.rows];
+
+        for i in 0..self.rows {
+            for j in 0..self.cols {
+                data[i] += self.data[j * self.cols + i] * v.data[j];
+            }
+        }
+
+        ComplexVector { data }
     }
 
     pub fn eigenvalues(&self) -> Result<Vec<Complex>, LapackError> {
@@ -358,6 +456,36 @@ impl ComplexMatrix {
 
         match info {
             0 => Ok(eigenvalues.iter().map(|&z| Complex::from(z)).collect()),
+            n @ ..=-1 => Err(LapackError { info, message: format!("Illegal value in argument {}", -n) }),
+            n => Err(LapackError { info, message: format!("The QR algorithm failed to compute all the eigenvalues, and no eigenvectors have been computed; elements and {}+1:{} of W contain eigenvalues which have converged.", n, self.rows) }),
+        }
+    }
+
+    pub fn eigen_real_sym_tridiagonal(&self) -> Result<Vec<(Complex, ComplexVector)>, LapackError> {
+        let mut info = 0;
+        let mut eigenvalues = self.eigenvalues()?;
+        let mut eigenvectors = vec![c64::new(0.0, 0.0); self.rows * self.cols];
+
+        zstein(
+            self.rows as i32,
+            &(0..self.rows).map(|i| self.data[i * self.rows + i].re).collect::<Vec<f64>>()[..],
+            &(0..self.rows-1).map(|i| self.data[i * self.rows + i + 1].re).collect::<Vec<f64>>()[..],
+            self.cols as i32,
+            &mut eigenvalues.iter().map(|z| z.real()).collect::<Vec<f64>>()[..],
+            &mut vec![1; self.rows],
+            &mut vec![1; self.rows],
+            &mut eigenvectors[..],
+            self.rows as i32,
+            &mut vec![0.0; 5 * self.rows][..],
+            &mut vec![0; self.rows][..],
+            &mut 0,
+            &mut info
+        );
+
+        match info {
+            0 => Ok(eigenvalues.iter().enumerate().map(
+                |(i, &z)| (Complex::from(z), ComplexVector { data: eigenvectors[i * self.rows..(i+1) * self.rows].to_vec() })
+            ).collect()),
             n @ ..=-1 => Err(LapackError { info, message: format!("Illegal value in argument {}", -n) }),
             n => Err(LapackError { info, message: format!("The QR algorithm failed to compute all the eigenvalues, and no eigenvectors have been computed; elements and {}+1:{} of W contain eigenvalues which have converged.", n, self.rows) }),
         }
