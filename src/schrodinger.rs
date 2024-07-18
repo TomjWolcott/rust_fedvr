@@ -1,15 +1,17 @@
 use std::f64::consts::PI;
 use std::io::Write;
 use colored::Colorize;
-use itertools::Itertools;
-use plotly::{Configuration, Layout, Mesh3D, Plot, Scatter};
+use lapack::c64;
+use lapack::fortran::{zgtsv, zsteqr};
 use plotly::color::Rgb as PlotlyRgb;
+use plotly::{Configuration, Layout, Mesh3D, Plot, Scatter};
 use plotly::common::{Line, Mode, Title};
 use plotly::layout::Axis;
 use rayon::prelude::*;
-use crate::complex_wrapper::{Complex, ComplexMatrix, ComplexVector, I, ONE, ZERO};
+use crate::complex_wrapper::{Complex, ComplexMatrix, ComplexVector, I, LapackError, ONE, ZERO};
 use crate::gauss_quadrature::gauss_lobatto_quadrature;
 use crate::{lagrange, lagrange_deriv, sample, tdse_1d};
+use crate::lapack_wrapper::{complex_to_rgb, complex_to_rgb_just_hue};
 
 /*fn plot_result2(
     t_initial: f64,
@@ -101,22 +103,21 @@ use crate::{lagrange, lagrange_deriv, sample, tdse_1d};
 fn test_plotter() {
     plot_result(
         0.0, 2e-1, -1e-3, 1e-3,
-        &|x: f64, t: f64| Complex::from(if t > 0.1 { 1.0 } else { -1.0 }),
-        |x: f64, t: f64| Complex::from(1.0),
+        &|_x: f64, t: f64| Complex::from(if t > 0.1 { 1.0 } else { -1.0 }),
+        |_x: f64, _t: f64| Complex::from(1.0),
         "test_plotter"
     );
 }
 
-fn plot_result(
+pub(crate) fn plot_result<T: Into<c64>>(
     t_initial: f64,
     t_final: f64,
     x_initial: f64,
     x_final: f64,
-    psi_computed: &impl Fn(f64, f64) -> Complex,
-    psi_0: impl Fn(f64, f64) -> Complex,
+    psi_computed: &impl Fn(f64, f64) -> T,
+    psi_0: impl Fn(f64, f64) -> T,
     plot_name: &str
 ) {
-
     let num_points_t = 200;
     let num_points_x = 200;
 
@@ -136,18 +137,18 @@ fn plot_result(
     let mut magnitudes = Vec::with_capacity(num_points_t);
 
     sample(num_points_t, t_initial, t_final, |t| {
-        let mut prob = ZERO;
+        let mut prob = c64::new(0.0, 0.0);
         let mut magnitude = 0.0;
 
         sample(num_points_x, x_initial, x_final, |x| {
-            let computed = psi_computed(x, t);
+            let computed: c64 = psi_computed(x, t).into();
             let t_mid = (t - t_initial) / (t_final - t_initial);
-            let show_black = t_mid < 0.01 || t_mid > 0.99 || (false && (x > x_initial + 2e-1 && psi_computed(x - 1e-1, t).magnitude() < computed.magnitude()) &&
-                (x < x_final - 2e-1 && psi_computed(x + 1e-1, t).magnitude() < computed.magnitude()));
+            let show_black = t_mid < 0.01 || t_mid > 0.99 || (false && (x > x_initial + 2e-1 && psi_computed(x - 1e-1, t).into().norm() < computed.norm()) &&
+                (x < x_final - 2e-1 && psi_computed(x + 1e-1, t).into().norm() < computed.norm()));
             // println!("    Ψ({t:.4}, {x:.4}) = {: ^20}", computed.to_string());
             xs.push(x);
             ys.push(t);
-            zs.push(computed.magnitude().powi(2));
+            zs.push(computed.norm().powi(2));
 
             if xs.len() % num_points_x > 0 && xs.len() / num_points_x < num_points_t - 1 {
                 // triangle 1
@@ -161,7 +162,7 @@ fn plot_result(
 
                 let (r, g, b) = if show_black {
                     (0, 0, 0)
-                } else { computed.rgb_just_hue() };
+                } else { complex_to_rgb_just_hue(computed) };
                 colors.push(PlotlyRgb::new(r, g, b));
                 colors.push(PlotlyRgb::new(r, g, b));
             }
@@ -171,12 +172,12 @@ fn plot_result(
             // let (r0, g0, b0) = psi0_computed.rgb_just_hue();
             // colors0.push(PlotlyRgb::new(r0, g0, b0));
 
-            prob += computed.conj() * psi_0(x, 0.0);
-            magnitude += (computed.conj() * computed).real();
+            prob += computed.conj() * psi_0(x, 0.0).into();
+            magnitude += (computed.conj() * computed).re;
         });
 
         ts.push(t);
-        probs.push(((x_final - x_initial) * prob / num_points_x as f64).magnitude().powi(2));
+        probs.push(((x_final - x_initial) * prob / num_points_x as f64).norm().powi(2));
         magnitudes.push((x_final - x_initial) * magnitude / num_points_x as f64);
     });
 
@@ -836,7 +837,7 @@ pub fn compute_wave_function_simpler(options: GetWaveFuncOptions) -> impl Fn(f64
         .map(|(_, psi)| psi.clone())
         .unwrap_or(vec![ZERO; n_x]);
 
-    let (ground_energy, ground_state) = tdse_1d::ground_state(n_x, x_initial, x_final, &potential).unwrap();
+    let (ground_energy, ground_state) = ground_state(n_x, x_initial, x_final, &potential).unwrap();
     let psi_0 = move |x: f64, t: f64| (-I * ground_energy * t).exp() * ground_state(x);
     println!("Ground energy: {ground_energy} -- electric_0: {electric_0}");
 
@@ -853,7 +854,6 @@ pub fn compute_wave_function_simpler(options: GetWaveFuncOptions) -> impl Fn(f64
     let delta_x = (x_final - x_initial) / (n_x as f64 - 1.0);
     let beta = 1.0 / (2.0 * delta_x.powi(2));
     let quad_points = gauss_lobatto_quadrature(n_t, t_initial, t_initial + delta_time);
-    let ws: Vec<f64> = quad_points.iter().map(|&(_, w)| w).collect();
     let ts: Vec<Vec<f64>> = (0..nq_t)
         .map(|q| quad_points[0..].iter().map(|&(t, _)| t + q as f64 * delta_time).collect())
         .collect();
@@ -948,8 +948,6 @@ pub fn compute_wave_function_simpler(options: GetWaveFuncOptions) -> impl Fn(f64
         vector.data[n * dims_t] = (psi_initial[n]).into();
 
         for index in 0..dims {
-            let (_, i) = get_indices(index % dims_t);
-
             matrix.data[index * matrix.rows + n * dims_t] = if n == index / dims_t {
                 (l(index % dims_t, t_initial)).into()
             } else { 0.0.into() };
@@ -1069,7 +1067,7 @@ fn show_matrix_repeated__compute_wave() {
     let mut wave_functions: Vec<Box<dyn Fn(f64, f64) -> Complex>> = Vec::new();
 
     println!("Getting the ground state");
-    let (ground_energy, ground_state) = tdse_1d::ground_state(
+    let (ground_energy, ground_state) = ground_state(
         5*options.n_x, options.x_initial, options.x_final, &options.potential
     ).unwrap();
     let psi_0 = |x: f64, t: f64| (-I * ground_energy * t).exp() * ground_state(x);
@@ -1140,7 +1138,7 @@ fn repeated_compute_wave() {
     // options.electric_0 = 0.0;
 
     println!("Getting the ground state");
-    let (ground_energy, ground_state) = tdse_1d::ground_state(
+    let (ground_energy, ground_state) = ground_state(
         options.n_x, options.x_initial, options.x_final, &options.potential
     ).unwrap();
     let psi_0 = |x: f64, t: f64| (-I * ground_energy * t).exp() * ground_state(x);
@@ -1257,7 +1255,6 @@ fn iterative_repeat() {
     options.pulse_final = 1200.0;
 
     for i in 0..num_intervals {
-        let time_start = i as f64 * delta_time;
         let time_end = (i + 1) as f64 * delta_time;
 
         options.t_final = time_end;
@@ -1282,7 +1279,7 @@ fn iterative_repeat() {
     };
 
     println!("Getting the ground state");
-    let (ground_energy, ground_state) = tdse_1d::ground_state(
+    let (ground_energy, ground_state) = ground_state(
         options.n_x, options.x_initial, options.x_final, &options.potential
     ).unwrap();
     let psi_0 = |x: f64, t: f64| (-I * ground_energy * t).exp() * ground_state(x);
@@ -1347,7 +1344,7 @@ fn compute_iterative_solve(
     let GetWaveFuncOptions {
         initial_time_settings, t_final, n_t, nq_t, x_initial, x_final, n_x,
         ang_frequency, phase_shift, electric_0, potential,
-        pulse_initial, pulse_final, smooth_wave, debug, show_matrix, ..
+        pulse_initial, pulse_final, smooth_wave, debug, ..
     } = options;
 
     let t_initial = *initial_time_settings.as_ref().map(|(t, _)| t).unwrap_or(&0.0);
@@ -1355,7 +1352,7 @@ fn compute_iterative_solve(
     let init_offset = if initial_time_settings.is_none() { 0 } else { 1 };
 
     if debug { println!("Computing the ground state"); }
-    let (ground_energy, ground_state) = tdse_1d::ground_state(n_x, x_initial, x_final, &potential).unwrap();
+    let (ground_energy, ground_state) = ground_state(n_x, x_initial, x_final, &potential).unwrap();
     let psi_0 = move |x: f64, t: f64| (-I * ground_energy * t).exp() * ground_state(x);
 
     let electric_field = |t| if pulse_initial <= t && t <= pulse_final {
@@ -1369,7 +1366,6 @@ fn compute_iterative_solve(
     let delta_x = (x_final - x_initial) / (n_x as f64 - 1.0);
     let beta = 1.0 / (2.0 * delta_x.powi(2));
     let quad_points = gauss_lobatto_quadrature(n_t, t_initial, t_initial + delta_time);
-    let ws: Vec<f64> = quad_points.iter().map(|&(_, w)| w).collect();
     let ts: Vec<Vec<f64>> = (0..nq_t)
         .map(|q| quad_points[0..].iter().map(|&(t, _)| t + q as f64 * delta_time).collect())
         .collect();
@@ -1489,7 +1485,6 @@ fn compute_iterative_solve(
                 if let Some((t_0, _)) = initial_time_settings {
                     for n in block_range.clone() {
                         for index in 0..matrix_size {
-                            let (_, i) = get_indices(index % dims_t);
                             matrix.data[index * matrix.rows + (n - block_range.start) * dims_t] = if n == index / dims_t {
                                 (l(index % dims_t, t_0)).into()
                             } else { 0.0.into() };
@@ -1557,7 +1552,6 @@ fn compute_iterative_solve(
 
                                 let it_index = q * (n_t - 1) + i + init_offset - 1;
                                 let i_index = it_index + (n - block_range.start) * dims_t;
-                                let alpha = 2.0 * beta + potential(xs[n]) - time_dep(xs[n], t_i);
                                 let is_bridge_i = (q != 0 && i == 0) ||
                                     (q != nq_t - 1 && i == n_t - 1);
 
@@ -1723,6 +1717,126 @@ fn compute_iterative_solve(
 }
 
 
+
+pub fn ground_state(
+    n_x: usize, x_initial: f64, x_final: f64,
+    potential: &impl Fn(f64) -> f64
+) -> Result<(f64, impl Fn(f64) -> Complex + Clone + 'static), LapackError> {
+    let delta_x = (x_final - x_initial) / (n_x as f64 - 1.0);
+    let beta = -1.0 / (2.0 * delta_x.powi(2));
+    let mut info = 0;
+
+    let mut diagonal = (0..n_x)
+        .map(|i| -2.0 * beta + potential(i as f64 * delta_x + x_initial))
+        .collect::<Vec<f64>>();
+    let mut off_diagonal = vec![beta; n_x - 1];
+    let mut workspace=  vec![0.0; 4 * n_x];
+
+    zsteqr(
+        'N' as u8,
+        n_x as i32,
+        &mut diagonal[..],
+        &mut off_diagonal[..],
+        &mut [][..],
+        n_x as i32,
+        &mut workspace[..],
+        &mut info
+    );
+
+    let mut eigenvector = vec![ONE.into(); n_x];
+    let ground_state_energy = diagonal[0];
+
+    for _ in 0..10 {
+        let mut diagonal = (0..n_x)
+            .map(|i| (-2.0 * beta + potential(i as f64 * delta_x + x_initial) - ground_state_energy).into())
+            .collect::<Vec<c64>>();
+        let mut info = 0;
+
+        zgtsv(
+            n_x as i32,
+            1,
+            &mut vec![beta.into(); n_x - 1][..],
+            &mut diagonal[..],
+            &mut vec![beta.into(); n_x - 1][..],
+            &mut eigenvector,
+            n_x as i32,
+            &mut info
+        );
+
+        let norm = eigenvector.iter()
+            .map(|x| x.norm_sqr())
+            .sum::<f64>()
+            .sqrt();
+
+        eigenvector.iter_mut().for_each(|x| *x = *x / norm);
+
+        if info != 0 {
+            panic!("lapack error on zgtsv(...): {info}")
+        }
+    }
+
+    let magnitude = (0..n_x).map(|i| eigenvector[i].norm_sqr() * delta_x).sum::<f64>().sqrt();
+
+    match info {
+        0 => Ok((ground_state_energy, move |x: f64| {
+            let n1 = ((x - x_initial) / delta_x).floor() as usize;
+            let n2 = ((x - x_initial) / delta_x).ceil() as usize;
+            let x_mid = (x - n1 as f64 * delta_x - x_initial) / delta_x;
+            let psi_n = eigenvector[n1];
+            let psi_n_plus_1 = if n2 == n_x { psi_n } else { eigenvector[n2] };
+
+            (((1.0 - x_mid) * psi_n + x_mid * psi_n_plus_1) / magnitude).into()
+        })),
+        i @ ..=-1 => Err(LapackError {
+            info: i,
+            message: format!("The value at {i} had an illegal value")
+        }),
+        i => Err(LapackError {
+            info: i,
+            message: format!("The algorithm has failed to find all the eigenvalues in a total of 30*N iterations, {i} elements of E have not converged to zero")
+        })
+    }
+}
+
+#[test]
+fn test_ground_state() {
+    let n_x: usize = 501;
+    let x_initial: f64 = -100.0;
+    let x_final: f64 = 100.0;
+    let potential = |x: f64|  -1.0 / (1.0 + x.powi(2)).sqrt();
+
+    let (_, ground_state) = ground_state(
+        n_x,
+        x_initial,
+        x_final,
+        &potential
+    ).unwrap();
+
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+
+    for i in 0..5*n_x {
+        let x_i = i as f64 * (x_final - x_initial) / ((5 * n_x) as f64 - 1.0) + x_initial;
+        let computed = ground_state(x_i);
+
+        xs.push(x_i);
+        ys.push(computed.magnitude());
+
+        println!("Ψ_0({:.4}) = {:.8}", x_i, computed);
+    }
+
+    let scatter = Scatter::new(xs, ys)
+        .name("Ψ_0")
+        .line(Line::new().width(0.0))
+        .mode(Mode::Markers);
+
+    let mut plot = Plot::new();
+    plot.add_trace(scatter);
+    plot.set_configuration(Configuration::new().fill_frame(true));
+    plot.write_html("output/ground_state.html");
+}
+
+
 // OLD:
 /*
 
@@ -1739,7 +1853,7 @@ pub fn compute_wave_function(options: GetWaveFuncOptions) -> impl Fn(f64, f64) -
     let is_simple_initial = initial_time_settings.is_none();
     let init_offset = if initial_time_settings.is_none() { 0 } else { 1 };
 
-    let (ground_energy, ground_state) = tdse_1d::ground_state(n_x, x_initial, x_final, &potential).unwrap();
+    let (ground_energy, ground_state) = ground_state(n_x, x_initial, x_final, &potential).unwrap();
     let psi_0 = move |x: f64, t: f64| (-I * ground_energy * t).exp() * ground_state(x);
     println!("Ground energy: {ground_energy} -- electric_0: {electric_0}");
 
@@ -2124,7 +2238,7 @@ fn iterative_schrodinger_solve() {
     let phase_shift = 0.0;
     let electric_0 = 0.1;
     let potential = |x: f64| -1.0 / (1.0 + x.powi(2)).sqrt();
-    let (ground_energy, ground_state) = tdse_1d::ground_state(n_x, x_initial, x_final, &potential).unwrap();
+    let (ground_energy, ground_state) = ground_state(n_x, x_initial, x_final, &potential).unwrap();
     let psi_0 = |x: f64, t: f64| (-I * ground_energy * t).exp() * ground_state(x);
 
 
@@ -2417,7 +2531,7 @@ fn compute_iterative_solve_old(
     let init_offset = if initial_time_settings.is_none() { 0 } else { 1 };
 
     if debug { println!("Computing the ground state"); }
-    let (ground_energy, ground_state) = tdse_1d::ground_state(n_x, x_initial, x_final, &potential).unwrap();
+    let (ground_energy, ground_state) = ground_state(n_x, x_initial, x_final, &potential).unwrap();
     let psi_0 = move |x: f64, t: f64| (-I * ground_energy * t).exp() * ground_state(x);
 
     let electric_field = |t| if pulse_initial <= t && t <= pulse_final {

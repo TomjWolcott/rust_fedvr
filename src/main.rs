@@ -1,11 +1,7 @@
 use std::fs::write;
 use itertools::MultiUnzip;
 use lapack::c64;
-use plotly::common::{Marker, Mode, Title};
-use plotly::traces::Scatter3D;
-use plotly::{Configuration, Contour, Layout, Mesh3D, Plot};
-use plotly::layout::Axis;
-use rand::Rng;
+use plotly::{Configuration, Contour, Plot};
 use rayon::prelude::{ParallelSliceMut, ParallelIterator, IndexedParallelIterator};
 use crate::complex_wrapper::{Complex, ComplexMatrix, ComplexVector, E, I, ONE, ZERO};
 use crate::gauss_quadrature::gauss_lobatto_quadrature;
@@ -14,6 +10,8 @@ mod gauss_quadrature;
 mod complex_wrapper;
 mod schrodinger;
 mod tdse_1d;
+mod lapack_wrapper;
+mod bases;
 
 fn main() {
 
@@ -32,13 +30,13 @@ fn lagrange(xs: &Vec<f64>, i: usize, x: f64) -> f64 {
 
 fn lagrange_deriv(xs: &Vec<f64>, i: usize, mut x: f64) -> f64 {
     if xs[0] - 1e-8 <= x && x <= *xs.last().unwrap() + 1e-8 {
-        x += 5e-14;
+        x += 5e-12;
 
         let l1 = lagrange(xs, i, x) * xs.iter().enumerate().map(|(j, &x_j)| {
             if i == j { 0.0 } else { 1.0 / (x - x_j) }
         }).sum::<f64>();
 
-        x -= 1e-13;
+        x -= 1e-11;
 
         let l2 = lagrange(xs, i, x) * xs.iter().enumerate().map(|(j, &x_j)| {
             if i == j { 0.0 } else { 1.0 / (x - x_j) }
@@ -406,7 +404,7 @@ fn solve_simple_with_abstraction() {
         t_initial, t_final,
         25, 100, 1,
         t_0, psi_0,
-        |q, i, ts, ws| {
+        |_q, _i, _ts, _ws| {
             0.0
         },
         |q, i, j, ts, ws| {
@@ -568,7 +566,7 @@ fn compare_to_paper() {
             0.0, t_final,
             num_intervals, num_quad_points, 1,
             0.0, Complex::new(1.0, 0.0),
-            |q, i, ts, ws| {
+            |_q, _i, _ts, _ws| {
                 0.0
             },
             |q, i, j, ts, ws| {

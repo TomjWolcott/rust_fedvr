@@ -1,7 +1,7 @@
 use rgsl::types::ComplexF64;
 use std::{iter::Sum, ops::*};
 use std::f64::consts::PI;
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug};
 use colored::Colorize;
 use colors_transform::{Color as ColorTransform, Hsl};
 use lapack::c64;
@@ -10,6 +10,33 @@ use lapack::fortran::{zgeev, zgesv, zgetrf, zgetri, zstein};
 /// This is a wrapper around rgsl::types::ComplexF64, so I can use operator overloading on complex numbers
 #[derive(Clone, Copy)]
 pub struct Complex(ComplexF64);
+
+#[test]
+fn complex_mem_layout() {
+    let z1 = Complex::new(1.37, -8.33);
+    let z2 = c64::new(1.37, -8.33);
+    let v1: Vec<Complex> = (0..10).map(|i| Complex::new(i as f64, -(i as f64))).collect();
+
+    for &z in v1.iter() {
+        println!("z1s: {z}");
+    }
+
+    let v2: Vec<c64> = unsafe { std::mem::transmute(v1) };
+
+    for z in v2 {
+        println!("z2s: {z}");
+    }
+
+    unsafe {
+        let r1: *const Complex = &z1;
+        let r2: *const c64 = &z2;
+        println!(
+            "{:x?}\n{:x?}",
+            std::slice::from_raw_parts(r1 as *const u8, std::mem::size_of::<Complex>()),
+            std::slice::from_raw_parts(r2 as *const u8, std::mem::size_of::<c64>())
+        );
+    }
+}
 
 impl Complex {
     pub fn block(&self) -> String {
@@ -35,12 +62,6 @@ pub const ONE: Complex = Complex(ComplexF64 { dat: [1.0, 0.0] });
 #[allow(dead_code)]
 pub const ZERO: Complex = Complex(ComplexF64 { dat: [0.0, 0.0] });
 
-impl Into<c64> for Complex {
-    fn into(self) -> c64 {
-        c64::new(self.0.dat[0], self.0.dat[1])
-    }
-}
-
 impl From<f64> for Complex {
     fn from(f: f64) -> Self {
         Self(ComplexF64 { dat: [f, 0.0] })
@@ -50,6 +71,12 @@ impl From<f64> for Complex {
 impl From<c64> for Complex {
     fn from(c: c64) -> Self {
         Self(ComplexF64 { dat: [c.re, c.im] })
+    }
+}
+
+impl From<Complex> for c64 {
+    fn from(c: Complex) -> Self {
+        c64::new(c.dat[0], c.dat[1])
     }
 }
 
@@ -370,8 +397,6 @@ impl ComplexMatrix {
         let mut ipiv = vec![0; self.cols];
         let mut work = vec![ZERO.into(); 1];
 
-        let thread_id = format!("{}", thread_id::get() % 1000).yellow();
-
         zgetrf(
             self.rows as i32,
             self.cols as i32,
@@ -463,7 +488,7 @@ impl ComplexMatrix {
 
     pub fn eigen_real_sym_tridiagonal(&self) -> Result<Vec<(Complex, ComplexVector)>, LapackError> {
         let mut info = 0;
-        let mut eigenvalues = self.eigenvalues()?;
+        let eigenvalues = self.eigenvalues()?;
         let mut eigenvectors = vec![c64::new(0.0, 0.0); self.rows * self.cols];
 
         zstein(

@@ -1,67 +1,209 @@
 use std::f64::consts::PI;
 use lapack::c64;
 use lapack::fortran::{zgtsv, zsteqr};
-use plotly::{Configuration, Plot, Scatter};
-use plotly::common::{Line, Mode};
-use crate::complex_wrapper::{Complex, LapackError, ONE};
-use crate::gauss_quadrature::gauss_lobatto_quadrature;
-use crate::{lagrange, lagrange_deriv};
-/*
+use plotly::{Configuration, Layout, Mesh3D, Plot, Scatter};
+use plotly::common::{Line, Marker, Mode, Title};
+use plotly::layout::Axis;
+use crate::complex_wrapper::LapackError;
+use crate::sample;
+use crate::lapack_wrapper::{complex_to_rgb_just_hue, display_special_matrix, display_system, solve_systems, special_block_tridiagonal_solve};
+use crate::schrodinger::plot_result;
+use plotly::color::Rgb as PlotlyRgb;
+use crate::bases::{Basis, Grid, LagrangePolynomials};
+
+
+pub(crate) fn plot_result_with_expected_prob<T: Into<c64>>(
+    t_initial: f64,
+    t_final: f64,
+    x_initial: f64,
+    x_final: f64,
+    psi_computed: &impl Fn(f64, f64) -> T,
+    psi_0: impl Fn(f64, f64) -> T,
+    prob_expected: impl Fn(f64) -> f64,
+    plot_name: &str
+) {
+    let num_points_t = 200;
+    let num_points_x = 200;
+
+    let mut xs = Vec::with_capacity(num_points_x*num_points_t);
+    let mut ys = Vec::with_capacity(num_points_x*num_points_t);
+    let mut zs = Vec::with_capacity(num_points_x*num_points_t);
+    let mut is = Vec::with_capacity(2*num_points_x*num_points_t);
+    let mut js = Vec::with_capacity(2*num_points_x*num_points_t);
+    let mut ks = Vec::with_capacity(2*num_points_x*num_points_t);
+    let mut colors = Vec::with_capacity(num_points_x*num_points_t);
+
+    // let mut zs0 = Vec::with_capacity(num_points_x*num_points_t);
+    // let mut colors0 = Vec::with_capacity(num_points_x*num_points_t);
+
+    let mut ts = Vec::with_capacity(num_points_t);
+    let mut probs = Vec::with_capacity(num_points_t);
+    let mut probs_expected = Vec::with_capacity(num_points_t);
+    let mut magnitudes = Vec::with_capacity(num_points_t);
+
+    sample(num_points_t, t_initial, t_final, |t| {
+        let mut prob = c64::new(0.0, 0.0);
+        let mut magnitude = 0.0;
+
+        sample(num_points_x, x_initial, x_final, |x| {
+            let computed: c64 = psi_computed(x, t).into();
+            let t_mid = (t - t_initial) / (t_final - t_initial);
+            let show_black = t_mid < 0.01 || t_mid > 0.99 || (false && (x > x_initial + 2e-1 && psi_computed(x - 1e-1, t).into().norm() < computed.norm()) &&
+                (x < x_final - 2e-1 && psi_computed(x + 1e-1, t).into().norm() < computed.norm()));
+            // println!("    Ψ({t:.4}, {x:.4}) = {: ^20}", computed.to_string());
+            xs.push(x);
+            ys.push(t);
+            zs.push(computed.norm().powi(2));
+
+            if xs.len() % num_points_x > 0 && xs.len() / num_points_x < num_points_t - 1 {
+                // triangle 1
+                is.push(xs.len() - 1);
+                js.push(xs.len() + num_points_x);
+                ks.push(xs.len());
+                // triangle 2
+                is.push(xs.len() - 1);
+                js.push(xs.len() + num_points_x);
+                ks.push(xs.len() - 1 + num_points_x);
+
+                let (r, g, b) = if show_black {
+                    (0, 0, 0)
+                } else { complex_to_rgb_just_hue(computed) };
+                colors.push(PlotlyRgb::new(r, g, b));
+                colors.push(PlotlyRgb::new(r, g, b));
+            }
+
+            // let psi0_computed = psi_0(x, t);
+            // zs0.push(psi0_computed.magnitude().powi(2));
+            // let (r0, g0, b0) = psi0_computed.rgb_just_hue();
+            // colors0.push(PlotlyRgb::new(r0, g0, b0));
+
+            prob += computed.conj() * psi_0(x, 0.0).into();
+            magnitude += (computed.conj() * computed).re;
+        });
+
+        ts.push(t);
+        probs.push(((x_final - x_initial) * prob / num_points_x as f64).norm().powi(2));
+        probs_expected.push(prob_expected(t));
+        magnitudes.push((x_final - x_initial) * magnitude / num_points_x as f64);
+    });
+
+    // xs.append(&mut vec![0.0, 0.0]);
+    // ys.append(&mut vec![0.0, 0.0]);
+    // zs.append(&mut vec![0.4, 1.3]);
+
+    let mesh = Mesh3D::new(xs, ys, zs, is, js, ks)
+        .name("Ψ(x,t)")
+        .opacity(1.0)
+        .flat_shading(true)
+        .face_color(colors);
+
+    // let scatter = Scatter3D::new(xs.clone(), ys.clone(), zs)
+    //     .name("Ψ(x,t)")
+    //     .line(Line::new().width(0.0))
+    //     .mode(Mode::Markers)
+    //     .marker(Marker::new().size(1).color_array(colors));
+
+    // let scatter_psi_0 = Scatter3D::new(xs, ys, zs0)
+    //     .name("Ψ_0(x,t)")
+    //     .line(Line::new().width(0.0))
+    //     .mode(Mode::Markers)
+    //     .marker(Marker::new().size(1).color_array(colors0));
+
+    let mut wave_func_plot = Plot::new();
+    wave_func_plot.add_trace(mesh);
+    wave_func_plot.set_configuration(Configuration::new().fill_frame(true).frame_margins(0.0));
+    wave_func_plot.set_layout(
+        Layout::new()
+    );
+    let mut html = wave_func_plot.to_html();
+
+    let mag_scatter = Scatter::new(ts.clone(), magnitudes)
+        .name("<Ψ*|Ψ>")
+        .line(Line::new().width(1.0))
+        .mode(Mode::Markers);
+
+    let scatter = Scatter::new(ts.clone(), probs)
+        .name("<Ψ*|Ψ_0>")
+        .line(Line::new().width(1.0))
+        .mode(Mode::Markers);
+
+    let scatter_exp = Scatter::new(ts, probs_expected)
+        .name("<Ψ*|Ψ_0> expected")
+        .line(Line::new().width(1.0))
+        .mode(Mode::Markers);
+
+    let mut prob_plot = Plot::new();
+    prob_plot.add_trace(scatter);
+    prob_plot.add_trace(mag_scatter);
+    prob_plot.add_trace(scatter_exp);
+    prob_plot.set_configuration(Configuration::new().fill_frame(true));
+    prob_plot.set_layout(
+        Layout::new()
+            .x_axis(Axis::new().title(Title::new("position")))
+    );
+    let prob_html = prob_plot.to_html();
+
+    html = html
+        .replace("<head>", "<head><style>body { overflow: scroll!important; }</style>")
+        .replace("<body>", "<body style=\"display: flex; flex-direction: column;\">")
+        .replace("plotly-html-element", "plotly-html-element-wave")
+        .replace("\"layout\": {", "\"layout\": {
+          \"scene\": {
+            \"xaxis\": {
+              \"title\": {
+                \"text\": \"position\"
+              }
+            },
+            \"yaxis\": {
+              \"title\": {
+                \"text\": \"time\"
+              }
+            },
+            \"zaxis\": {
+              \"title\": {
+                \"text\": \"Ψ(x,t)\"
+              }
+            }
+          },
+        ");
+
+    html = format!("{}{}", &html[..(html.len() - 17)], &prob_html[264..]);
+    println!("{}", format!("output/{}.html", plot_name));
+    std::fs::write(format!("output/{}.html", plot_name), html).expect("Unable to write file");
+}
+
 #[derive(Clone)]
 pub struct Tdse1dOptions {
-    initial_time_settings: Option<(f64, Vec<Complex>)>,
+    initial_time_settings: Option<(f64, Vec<c64>)>,
+    polys: LagrangePolynomials,
     t_final: f64,
     n_t: usize,
     nq_t: usize,
+    xs: Vec<f64>,
     x_initial: f64,
     x_final: f64,
     n_x: usize,
-    potential: fn(f64) -> f64,
-    time_dependence: fn(f64, f64) -> f64,
+    delta_x: f64,
+    driven_state: Option<(f64, Vec<c64>)>,
     debug: bool,
     plot_name: Option<String>,
     show_matrix: bool
 }
 
 impl Tdse1dOptions {
-    fn t_initial(&self) -> f64 {
-        self.initial_time_settings.as_ref().map(|(t, _)| *t).unwrap_or(0.0)
-    }
+    fn new(
+        t_final: f64, n_t: usize, nq_t: usize,
+        x_initial: f64, x_final: f64, n_x: usize
+    ) -> Self {
+        let delta_x = (x_final - x_initial) / (n_x as f64 - 1.0);
 
-    fn set_harmonic_oscillator(
-        &mut self,
-        angular_frequency: f64,
-        electric_0: f64
-    ) {
-        let (t_initial, t_final) = (self.t_initial(), self.t_final);
-
-        self.potential = |x| 0.5 * x.powi(2);
-        self.time_dependence = |x, t| {
-            x * electric_0 * (PI * (t - t_initial) / (t_final - t_initial)).sin().powi(2) * (angular_frequency * t).cos()
-        };
-    }
-
-    fn set_hydrogen_laser_pulse(
-        &mut self,
-        angular_frequency: f64,
-        electric_0: f64,
-        phase_shift: f64,
-        smooth_pulse: bool,
-        pulse_initial: f64,
-        pulse_final: f64
-    ) {
-        let (t_initial, t_final) = (self.t_initial(), self.t_final);
-
-        self.potential = |x| -1.0 / (1.0 * x.powi(2)).sqrt();
-        self.time_dependence = |x, t| {
-            let pulse = if t < pulse_initial || pulse_final < t {
-                0.0
-            } else if  smooth_pulse {
-                (PI * (t - t_initial) / (t_final - t_initial)).sin().powi(2)
-            } else { 1.0 };
-
-            x * electric_0 * (angular_frequency * t + phase_shift).sin() * pulse
-        };
+        Self {
+            polys: LagrangePolynomials::new(n_t, nq_t, 0.0, t_final),
+            t_final, n_t, nq_t,
+            xs: (0..n_x).map(|i| i as f64 * delta_x + x_initial).collect(),
+            x_initial, x_final, n_x, delta_x,
+            ..Self::default()
+        }
     }
 
     fn with_debug(mut self) -> Self {
@@ -78,69 +220,757 @@ impl Tdse1dOptions {
         self.show_matrix = true;
         self
     }
+
+    fn with_driven_state(mut self, problem: &Tdse1dProblem, n: usize) -> Self {
+        let (energy, state) = get_eigenstate(n, &self.xs, &problem.potential)
+            .expect("Couldn't get eigenstate");
+
+        self.driven_state = Some((energy, state));
+
+        self
+    }
+
+    fn set_new_interval(&mut self, t_initial: f64, t_final: f64, psi_initial: Vec<c64>) {
+        self.initial_time_settings = Some((t_initial, psi_initial));
+        self.t_final = t_final;
+        self.polys = LagrangePolynomials::new(self.n_t, self.nq_t, t_initial, t_final);
+    }
+
+    fn t_initial(&self) -> f64 {
+        self.initial_time_settings.as_ref().map(|(t, _)| *t).unwrap_or(0.0)
+    }
+
+    fn psi_0_vec(&self, t: f64) -> Vec<c64> {
+        if let Some((energy, state)) = self.driven_state.clone() {
+            state.iter().map(|&psi| c64::exp(&(-c64::i() * energy * t)) * psi).collect()
+        } else {
+            vec![0.0.into(); self.n_x]
+        }
+    }
+
+    fn psi_0<'a>(&self) -> Box<dyn Fn(usize, f64) -> c64 + 'static> {
+        if let Some((energy, state)) = self.driven_state.clone() {
+            Box::new(move |n, t| {
+                c64::exp(&(-c64::i() * energy * t)) * state[n]
+            })
+        } else {
+            Box::new(|_n, _t| 0.0.into())
+        }
+    }
 }
 
 impl Default for Tdse1dOptions {
     fn default() -> Self {
         Tdse1dOptions {
             initial_time_settings: None,
+            polys: LagrangePolynomials::default(),
             t_final: 100.0,
             n_t: 100,
             nq_t: 1,
+            xs: Vec::new(),
             x_initial: -2e2,
             x_final: 2e2,
             n_x: 4001,
-            potential: |_x| 0.0,
-            time_dependence: |_x, _t| 0.0,
+            delta_x: 0.1,
+            driven_state: None,
             debug: false,
             plot_name: None,
             show_matrix: false
         }
     }
 }
+
+pub struct Tdse1dProblem {
+    potential: Box<dyn Fn(f64) -> f64 + 'static>,
+    time_dependence: Box<dyn Fn(f64, f64) -> f64 + 'static>
+}
+
+impl Tdse1dProblem {
+    fn two_level_atom(
+        electric_0: f64,
+        pulse_final: f64
+    ) -> Self {
+        Self {
+            potential: Box::new(move |x| -1.0 / x.abs()),
+            // potential: Box::new(move |x| -1.0 / (1.0 + x.powi(2)).sqrt()),
+            // potential: Box::new(move |_x| 0.0),
+            time_dependence: Box::new(move |x, t| {
+                x * 0.5 * electric_0 * (PI * t / pulse_final).sin().powi(2)
+            }),
+        }
+    }
+
+    fn harmonic_oscillator(
+        angular_frequency: f64,
+        electric_0: f64,
+        pulse_final: f64
+    ) -> Self {
+        Self {
+            potential: Box::new(move |x| 0.5 * x.powi(2)),
+            time_dependence: Box::new(move |x, t| {
+                x * electric_0 * (PI * t / pulse_final).sin().powi(2) * (angular_frequency * t).cos()
+            }),
+        }
+    }
+
+    fn set_hydrogen_laser_pulse(
+        angular_frequency: f64,
+        electric_0: f64,
+        phase_shift: f64,
+        smooth_pulse: bool,
+        pulse_initial: f64,
+        pulse_final: f64
+    ) -> Self {
+        Self {
+            potential: Box::new(move |x| -1.0 / (1.0 + x.powi(2)).sqrt()),
+            time_dependence: Box::new(move |x, t| {
+                let pulse = if t < pulse_initial || pulse_final < t {
+                    0.0
+                } else if smooth_pulse {
+                    (PI * (t - pulse_initial) / (pulse_final - pulse_initial)).sin().powi(2)
+                } else { 1.0 };
+
+                x * electric_0 * (angular_frequency * t + phase_shift).sin() * pulse
+            }),
+        }
+    }
+}
+
+pub struct Tdse1dBasisGrid {
+    ts: LagrangePolynomials,
+    xs: Grid
+}
+/*
+impl Tdse1dBasisGrid {
+    pub fn new(
+        n_t: usize, t_i: f64, t_f: f64,
+        n_x: usize, x_i: f64, x_f: f64
+    ) -> Self {
+        Self {
+            ts: LagrangePolynomials::new(n_t, 1, t_i, t_f),
+            xs: Grid::new(n_x, x_i, x_f)
+        }
+    }
+
+    pub fn solve_system(&self, options: &Tdse1dOptions) -> Vec<c64> {
+        let (n_x, n_t) = (self.xs.dims(), self.ts.dims());
+        let mut matrix = vec![0.0.into(); n_t * n_t * n_x];
+        let mut rhs = vec![0.0.into(); n_t * n_x];
+
+        for n in 0..self.xs.dims() {
+            for index_it in 0..self.ts.dims() {
+                let index_i = index_it + n * n_t * n_t;
+                let t_i = self.ts.point(index_it);
+                let alpha = potential(self.xs.points[n]) + time_dependence(xs[n], t_i) + 1.0 / delta_x.powi(2);
+
+                rhs[index_it + n * n_t] = (time_dependence(self.xs.points[n], t_i) * psi_0(n, t_i)).into();
+
+                for index_jt in 0..n_t {
+                    matrix[index_it + dims_t * index_jt + n * dims_t*dims_t] = (
+                        c64::i() * polys.l_deriv(index_jt, t_i) -
+                            if index_it == index_jt { alpha } else { 0.0 }
+                    ).into();
+                }
+            }
+        }
+
+        for n in 0..n_x {
+            rhs[n * n_t] = psi_i[n];
+
+            if n > 0 {
+                rhs[n * n_t] += beta * psi_i[n-1];
+            }
+
+            if n < n_x - 1 {
+                rhs[n * n_t] += beta * psi_i[n+1];
+            }
+
+            for index in 0..n_t {
+                matrix[index * n_t + n * n_t * n_t] = (if index == 0 { 1.0 } else { 0.0 }).into()
+            }
+        }
+    }
+}*/
+
+pub struct Tdse1dSolution {
+    vector: Vec<c64>,
+    t_basis_fns: Box<dyn Fn(usize, f64) -> f64 + 'static>,
+    dims_t: usize,
+    xs: Vec<f64>,
+    psi_0: Box<dyn Fn(usize, f64) -> c64 + 'static>
+}
+
+impl Tdse1dSolution {
+    fn assert_in_bounds_x(&self, x: f64) {
+        if !(self.xs[0] <= x && x <= self.xs[self.xs.len() - 1]) {
+            panic!("x: {x} is out of bounds, {:.4} <= {x:.4} <= {:.4}", self.xs[0], self.xs[self.xs.len() - 1]);
+        }
+    }
+
+    fn interp_x<T>(&self, x: f64, func: impl Fn(usize) -> T) -> T where
+        f64: std::ops::Mul<T, Output = T>,
+        T: std::ops::Add<T, Output = T>
+    {
+        let (x_initial, n_x) = (self.xs[0], self.xs.len());
+        let delta_x = self.xs[1] - self.xs[0];
+        let n1 = ((x - x_initial) / delta_x).floor() as usize;
+        let n2 = (((x - x_initial) / delta_x).ceil() as usize).min(n_x - 1);
+        let x_mid = (x - self.xs[n1]) / delta_x;
+
+        (1.0 - x_mid) * func(n1) + x_mid * func(n2)
+    }
+
+    fn get_wave_fn<'a>(&'a self) -> impl Fn(f64, f64) -> c64 + 'a {
+        move |x: f64, t: f64| {
+            self.assert_in_bounds_x(x);
+
+            self.interp_x(x, |n| (self.psi_0)(n, t)) + (0..self.dims_t).map(|index| {
+                self.interp_x(x, |n| self.vector[index + n * self.dims_t]) * (self.t_basis_fns)(index, t)
+            }).fold(c64::new(0.0, 0.0), |acc, z| acc + z)
+        }
+    }
+
+    fn psi(&self, n: usize, t: f64) -> c64 {
+        (self.psi_0)(n, t) + (0..self.dims_t).map(|index| {
+            self.vector[index + n * self.dims_t] * (self.t_basis_fns)(index, t)
+        }).fold(c64::new(0.0, 0.0), |acc, z| acc + z)
+    }
+
+    fn get_population_probability_fn<'a>(&'a self, n: usize, potential: &impl Fn(f64) -> f64) -> impl Fn(f64) -> f64 + 'a {
+        let (_, state) = get_eigenstate(n, &self.xs, &potential).expect("Couldn't get eigenstate");
+        let n_x = self.xs.len();
+        let delta_x = self.xs[1] - self.xs[0];
+
+        move |t| {
+            (0..n_x).map(|n| {
+                self.psi(n, t).conj() * state[n] * delta_x
+            }).fold(c64::from(0.0), |acc, z| acc + z).norm_sqr()
+        }
+    }
+
+    fn get_norm_fn<'a>(&'a self) -> impl Fn(f64) -> f64 + 'a {
+        let n_x = self.xs.len();
+        let delta_x = self.xs[1] - self.xs[0];
+
+        move |t| {
+            (0..n_x).map(|n| {
+                self.psi(n, t).norm_sqr() * delta_x
+            }).sum::<f64>().sqrt()
+        }
+    }
+}
+
+/*
+#[test]
+fn test_two_level_atom_solve() {
+    let t_final = 9000.0;
+    let num_intervals = 90;
+
+    let options = Tdse1dOptions {
+        t_final: t_final / num_intervals as f64,
+        n_t: 40,
+        nq_t: 1,
+        x_initial: -5e0,
+        x_final: 5e0,
+        n_x: 101,
+        ..Default::default()
+    }.with_debug();
+
+    let e0 = 2.0 * PI / 9000.0;
+    let pulse_final = 9000.0;
+    let problem = Tdse1dProblem::two_level_atom(&options, e0, pulse_final);
+
+    let (_, ground_state) = ground_state(
+        options.n_x, options.x_initial, options.x_final, &problem.potential
+    ).unwrap();
+
+    let wave_function = repeated_solve_tdse_1d(options.clone(), &problem, num_intervals);
+
+    let prob_ground_expected = |t| {
+        f64::cos(0.25 * e0 * (t - pulse_final / (2.0 * PI) * f64::sin(2.0 * PI * t / pulse_final))).powi(2)
+    };
+
+    let prob_ground_computed = |t| {
+        qk61(|x| (wave_function(x, t).conj() * c64::from(ground_state(x))).norm(), options.x_initial, options.x_final).0
+    };
+
+    plot_result_with_expected_prob(
+        options.t_initial(),
+        t_final,
+        options.x_initial,
+        options.x_final,
+        &wave_function,
+        |x, t| c64::from(ground_state(x)),
+        prob_ground_expected,
+        "two_level_atom"
+    );
+
+    let mut err_max: f64 = 0.0;
+
+    println!("c_g(______) =       Expected       vs       Computed      ");
+
+    sample(1000, 0.0, t_final, |t| {
+        let expected = prob_ground_expected(t);
+        let computed = prob_ground_computed(t);
+        let err = (expected - computed).abs();
+        println!("c_g({t:.4}) = {: ^20} vs {: ^20} -- error: {err:.4e}", expected.to_string(), computed.to_string());
+        err_max = err_max.max(err);
+    });
+
+    println!("MAX ERROR: {:.4e}", err_max);
+}
 */
-pub fn ground_state(
-    n_x: usize, x_initial: f64, x_final: f64,
+
+#[test]
+fn show_off_init_conditions() {
+    let problem = Tdse1dProblem::harmonic_oscillator(
+        0.0, 1.0, 100.0
+    );
+
+    let mut options = Tdse1dOptions::new(
+        10.0, 4, 1,
+        -2e1, 2e1, 5
+    ).with_debug().with_matrix();
+
+    let (_, ground_state) = get_eigenstate(0, &options.xs, &problem.potential)
+        .expect("Couldn't get eigenstate");
+
+    options.set_new_interval(0.0, 10.0, ground_state);
+
+    let _ = solve_tdse_1d(options.clone(), &problem);
+}
+
+#[test]
+fn test_harmonic_solve() {
+    let problem = Tdse1dProblem::harmonic_oscillator(
+        1.0, 1.0, 100.0
+    );
+
+    let mut options = Tdse1dOptions::new(
+        10.0, 20, 1,
+        -5e1, 5e1, 100001
+    ).with_debug().with_driven_state(&problem, 0);//.with_plot("harmonic_oscillator".to_string());
+
+    let solution = repeated_solve_tdse_1d(options.clone(), &problem, 10, solve_tdse_1d_optimized);
+
+    let prob_ground_expected = harmonic_ground_state_probability(1.0, 1.0, 100.0, 0);
+    let prob_ground_computed = solution.get_population_probability_fn(0, &problem.potential);
+    let norm_computed = solution.get_norm_fn();
+
+    println!("P_0(______) =       Expected       vs       Computed      ");
+
+    let mut max_err: f64 = 0.0;
+    let mut xs = Vec::new();
+    let mut ys_e = Vec::new();
+    let mut ys_c = Vec::new();
+    let mut ys_n = Vec::new();
+    let mut ys_err = Vec::new();
+
+    sample(200, 0.0, 100.0, |t| {
+        let expected = prob_ground_expected(t);
+        let computed = prob_ground_computed(t);
+        let err = (expected - computed).abs();
+        println!("P_0({t:.4}) = {: ^20} vs {: ^20} -- error: {err:.4e}", format!("{:.6}", expected), format!("{:.6}", computed));
+        max_err = max_err.max(err);
+
+        xs.push(t);
+        ys_e.push(expected);
+        ys_c.push(computed);
+        ys_n.push(norm_computed(t));
+        ys_err.push(err);
+    });
+
+    let mut prob_plot = Plot::new();
+
+    let mut add_ys = |name: &str, ys: Vec<f64>| {
+        let scatter = Scatter::new(xs.clone(), ys)
+            .name(name)
+            .line(Line::new().width(2.0))
+            .marker(Marker::new().size(4))
+            .mode(Mode::LinesMarkers);
+
+        prob_plot.add_trace(scatter);
+    };
+
+    add_ys("Expected", ys_e);
+    add_ys("Computed", ys_c);
+    add_ys("Norm", ys_n);
+    add_ys("Error", ys_err);
+
+    prob_plot.set_configuration(Configuration::new().fill_frame(true));
+    prob_plot.set_layout(
+        Layout::new()
+            .x_axis(Axis::new().title(Title::new("time")))
+            .y_axis(Axis::new().title(Title::new("P_0")))
+    );
+    prob_plot.write_html("output/harmonic_error.html");
+
+    println!("MAX ERROR: {:e}", max_err);
+}
+
+#[test]
+fn test_hydrogen_solve() {
+    let problem = Tdse1dProblem::set_hydrogen_laser_pulse(
+        0.148, 0.1, 0.0,
+        false, 0.0, 1200.0
+    );
+
+    let options = Tdse1dOptions::new(
+        10.0, 100, 1,
+        -2e2, 2e2, 1001
+    ).with_debug()
+        .with_plot("hydrogen_atom".to_string())
+        .with_driven_state(&problem, 0);
+
+    let _wave_function = repeated_solve_tdse_1d(options, &problem, 10, solve_tdse_1d_optimized);
+}
+
+pub fn solve_tdse_1d(options: Tdse1dOptions, problem: &Tdse1dProblem) -> Tdse1dSolution {
+    let psi_0 = options.psi_0();
+    let Tdse1dOptions {
+        initial_time_settings, polys, t_final,
+        xs, x_initial, x_final, n_x, delta_x,
+        debug, plot_name, show_matrix, ..
+    } = options;
+
+    let Tdse1dProblem { potential, time_dependence, .. } = problem;
+
+    let t_initial = *initial_time_settings.as_ref().map(|(t, _)| t).unwrap_or(&0.0);
+    let psi_initial = initial_time_settings.as_ref()
+        .map(|(_, psi)| psi.clone())
+        .unwrap_or(vec![0.0.into(); n_x]);
+
+    let beta = 1.0 / (2.0 * delta_x.powi(2));
+
+    let dims_t = polys.dims;
+    let dims = dims_t * n_x;
+    let mut matrix: Vec<c64> = vec![0.0.into(); dims.pow(2)];
+
+    let mut vector: Vec<c64> = vec![0.0.into(); dims];
+
+    for n in 0..n_x {
+        for index_it in 0..dims_t {
+            let index_i = index_it + n * dims_t;
+            let t_i = polys.point(index_it);
+            let alpha = potential(xs[n]) + time_dependence(xs[n], t_i) + 1.0 / delta_x.powi(2);
+
+            vector[index_i] = (time_dependence(xs[n], t_i) * psi_0(n, t_i)).into();
+
+            for index_jt in 0..dims_t {
+                let index_j = index_jt + n * dims_t;
+                
+                matrix[index_i + dims * index_j] = (c64::i() * polys.l_deriv(index_jt, t_i) - if index_it == index_jt { alpha } else { 0.0 }).into();
+                
+                if n > 0 && index_i == index_j {
+                    matrix[index_i + dims * (index_jt + (n-1) * dims_t)] = beta.into();
+                }
+                
+                if n < n_x - 1 && index_i == index_j {
+                    matrix[index_i + dims * (index_jt + (n+1) * dims_t)] = beta.into();
+                }
+            }
+        }
+    }
+
+    // for n in 0..n_x {
+    //     vector[n * dims_t] = psi_initial[n].into();
+    //
+    //     for index in 0..dims {
+    //         matrix[index * dims + n * dims_t] = if n == index / dims_t {
+    //             polys.l(index % dims_t, t_initial).into()
+    //         } else { 0.0.into() };
+    //     }
+    // }
+
+    if show_matrix {
+        println!("Matrix:");
+        display_system(&matrix, &vector, dims);
+    }
+
+    let result = solve_systems(matrix, dims, vector)
+        .expect("Couldn't solve systems of equations");
+
+    let solution = Tdse1dSolution {
+        vector: result,
+        t_basis_fns: polys.into_basis_fns(),
+        dims_t,
+        xs,
+        psi_0,
+    };
+
+    if debug && plot_name.is_some() { println!("PLOTTING"); }
+
+    if let Some(plot_name) = plot_name {
+        let (ground_energy, ground_state) = get_eigenstate(0, &solution.xs, &problem.potential)
+            .expect("Couldn't get eigenstate");
+        let psi_0 = |x: f64, t: f64| {
+            (-c64::i() * ground_energy * t).exp() * solution.interp_x(x, |n| ground_state[n])
+        };
+
+        plot_result(t_initial, t_final, x_initial, x_final, &solution.get_wave_fn(), &psi_0, &plot_name);
+    }
+
+    solution
+}
+
+pub fn solve_tdse_1d_optimized(options: Tdse1dOptions, problem: &Tdse1dProblem) -> Tdse1dSolution {
+    let psi_0 = options.psi_0();
+    let Tdse1dOptions {
+        initial_time_settings, polys, t_final,
+        xs, x_initial, x_final, n_x, delta_x,
+        debug, plot_name, show_matrix, ..
+    } = options;
+
+    let Tdse1dProblem { potential, time_dependence, .. } = problem;
+
+    let t_initial = *initial_time_settings.as_ref().map(|(t, _)| t).unwrap_or(&0.0);
+    let psi_initial = initial_time_settings.as_ref()
+        .map(|(_, psi)| psi.clone())
+        .unwrap_or(vec![0.0.into(); n_x]);
+
+    let beta = 1.0 / (2.0 * delta_x.powi(2));
+
+    let dims_t = polys.dims();
+    let dims = dims_t * n_x;
+    let mut matrix: Vec<c64> = vec![0.0.into(); dims_t*dims_t * n_x];
+
+    let mut rhs: Vec<c64> = vec![0.0.into(); dims];
+
+    for n in 0..n_x {
+        for index_it in 0..dims_t {
+            let index_i = index_it + n * dims_t*dims_t;
+            let t_i = polys.point(index_it);
+            let alpha = potential(xs[n]) + time_dependence(xs[n], t_i) + 1.0 / delta_x.powi(2);
+
+            rhs[index_it + n*dims_t] = (time_dependence(xs[n], t_i) * psi_0(n, t_i)).into();
+
+            for index_jt in 0..dims_t {
+                matrix[index_it + dims_t * index_jt + n * dims_t*dims_t] = (
+                    c64::i() * polys.l_deriv(index_jt, t_i) -
+                        if index_it == index_jt { alpha } else { 0.0 }
+                ).into();
+            }
+        }
+    }
+
+    for n in 0..n_x {
+        rhs[n * dims_t] = psi_initial[n];
+
+        if n > 0 {
+            rhs[n * dims_t] += beta * psi_initial[n-1];
+        }
+
+        if n < n_x - 1 {
+            rhs[n * dims_t] += beta * psi_initial[n+1];
+        }
+
+        for index in 0..dims_t {
+            matrix[index * dims_t + n * dims_t*dims_t] = (if index == 0 { 1.0 } else { 0.0 }).into()
+        }
+    }
+
+    if show_matrix {
+        println!("Matrix:");
+        display_special_matrix(beta.into(), &matrix, &rhs, dims_t, n_x);
+    }
+
+    let result = match special_block_tridiagonal_solve(beta, matrix, rhs, n_x, dims_t) {
+        Ok(sol) => sol,
+        Err(err) => {
+            panic!("Couldn't lapack: {:?}", err);
+        }
+    };
+
+    let solution = Tdse1dSolution {
+        vector: result,
+        t_basis_fns: polys.into_basis_fns(),
+        dims_t,
+        xs,
+        psi_0,
+    };
+
+    if debug && plot_name.is_some() { println!("PLOTTING"); }
+
+    if let Some(plot_name) = plot_name {
+        let (ground_energy, ground_state) = get_eigenstate(0, &solution.xs, &problem.potential)
+            .expect("Couldn't get eigenstate");
+        let psi_0 = |x: f64, t: f64| {
+            (-c64::i() * ground_energy * t).exp() * solution.interp_x(x, |n| ground_state[n])
+        };
+
+        plot_result(t_initial, t_final, x_initial, x_final, &solution.get_wave_fn(), &psi_0, &plot_name);
+    }
+
+    solution
+}
+
+pub fn repeated_solve_tdse_1d(
+    mut options: Tdse1dOptions,
+    problem: &Tdse1dProblem,
+    num_intervals: usize,
+    solver: impl Fn(Tdse1dOptions, &Tdse1dProblem) -> Tdse1dSolution
+) -> Tdse1dSolution {
+    let plot_name = options.plot_name.take();
+
+    let t_initial = options.t_initial();
+    let time_final = num_intervals as f64 * (options.t_final - t_initial) + t_initial;
+    let delta_time = options.t_final - t_initial;
+    let num_intervals = ((time_final / delta_time) as f64).ceil() as usize;
+    let dims_t = options.polys.dims;
+    let mut wave_func_vector = vec![0.0.into(); options.n_x];
+    let mut t_basis_fns: Vec<Box<dyn Fn(usize, f64) -> f64>> = Vec::new();
+    let mut solution = vec![0.0.into(); options.n_x * num_intervals * dims_t];
+
+    if options.debug { println!("Getting the ground state"); }
+
+    for k in 0..num_intervals {
+        if options.debug {
+            let time_start = k as f64 * delta_time;
+            let time_end = (k + 1) as f64 * delta_time;
+
+            println!("Interval: {}/{num_intervals}", k + 1);
+            println!("Time: {time_start} -> {time_end}");
+        }
+
+        let wave_function = solver(options.clone(), &problem);
+
+        for n in 0..options.n_x {
+            wave_func_vector[n] = wave_function.vector[n * dims_t + dims_t - 1];
+
+            for index_t in 0..dims_t {
+                solution[n * dims_t * num_intervals + k * dims_t + index_t] =
+                    wave_function.vector[n * dims_t + index_t];
+            }
+        }
+
+        if options.debug { println!(); }
+
+        options.set_new_interval(
+            (k + 1) as f64 * delta_time,
+            (k + 2) as f64 * delta_time,
+            wave_func_vector.clone()
+        );
+
+        t_basis_fns.push(Box::new(wave_function.t_basis_fns));
+    }
+
+    let psi_0 = options.psi_0();
+    let solution = Tdse1dSolution {
+        vector: solution,
+        t_basis_fns: Box::new(move |index, t| {
+            let k = (index / dims_t);
+
+            if k as f64 * delta_time + t_initial <= t && t < (k + 1) as f64 * delta_time + t_initial {
+                t_basis_fns[k](index % dims_t, t)
+            } else { 0.0 }
+        }),
+        dims_t: dims_t * num_intervals,
+        xs: options.xs,
+        psi_0,
+    };
+
+    if options.debug && plot_name.is_some() { println!("Plotting the result"); }
+
+    if let Some(plot_name) = plot_name {
+        let (ground_energy, ground_state) = get_eigenstate(0, &solution.xs, &problem.potential)
+            .expect("Couldn't get eigenstate");
+        let psi_0 = |x: f64, t: f64| {
+            (-c64::i() * ground_energy * t).exp() * solution.interp_x(x, |n| ground_state[n])
+        };
+
+        plot_result(
+            t_initial, time_final,
+            options.x_initial, options.x_final,
+            &solution.get_wave_fn(),
+            &psi_0,
+            &plot_name
+        );
+    }
+
+    solution
+}
+
+fn harmonic_ground_state_probability(w0: f64, e0: f64, pulse_final: f64, n: usize) -> impl Fn(f64) -> f64 {
+    let alpha = 2.0 * PI / pulse_final;
+
+    move |t| {
+        // FORTRAN from Ryan: (replace t+dt -> t)
+        // if (omega == 0d0) then
+        // I1 = -E_0/4d0*(2*sin(t+dt) - sin((alpha-1)*(t+dt))/(alpha-1) - sin((alpha+1)*(t+dt))/(alpha+1))
+        //
+        // I2 = -E_0/4d0*(-2*cos(t+dt) + 2 + cos((alpha+1)*(t+dt))/(alpha+1) - 1/(alpha+1)&
+        //     - cos((alpha-1)*(t+dt))/(alpha-1) + 1/(alpha-1))
+        //
+        // else if (omega == 1d0) then
+        //
+        // I1 = -E_0/8d0*(2*(t+dt) - 2*sin(alpha*(t+dt))/alpha + sin(2*(t+dt))&
+        //     - sin((alpha-2)*(t+dt))/(alpha-2) - sin((alpha+2)*(t+dt))/(alpha+2))
+        //
+        // I2 = -E_0/8d0*(-cos(2*(t+dt)) + 1 + cos((alpha+2)*(t+dt))/(alpha+2) - 1/(alpha+2)&
+        //     - cos((alpha-2)*(t+dt))/(alpha-2) + 1/(alpha-2))
+
+        let (i1, i2) = if w0 == 0.0 {(
+            -e0/4.0 * (2.0 * t.sin() - ((alpha-1.0)*t).sin()/(alpha-1.0) - ((alpha+1.0)*t).sin()/(alpha+1.0)),
+            -e0/4.0 * (-2.0 * t.cos() + 2.0 + ((alpha+1.0)*t).cos()/(alpha+1.0) - 1.0 / (alpha+1.0) - ((alpha-1.0)*t).cos()/(alpha-1.0) + 1.0 / (alpha-1.0))
+        )} else if w0 == 1.0 {(
+            // copilot wrote this...
+            -e0/8.0 * (2.0 * t - 2.0 * (alpha * t).sin() / alpha + (2.0 * t).sin() - ((alpha-2.0)*t).sin()/(alpha-2.0) - ((alpha+2.0)*t).sin()/(alpha+2.0)),
+            -e0/8.0 * (-(2.0 * t).cos() + 1.0 + ((alpha+2.0)*t).cos()/(alpha+2.0) - 1.0 / (alpha+2.0) - ((alpha-2.0)*t).cos()/(alpha-2.0) + 1.0 / (alpha-2.0))
+        )} else { panic!("Solution for ω={} not currently implemented", w0) };
+
+        let x_0 = t.sin() * i1 - t.cos() * i2;
+        let p_0 = t.cos() * i1 + t.sin() * i2;
+
+        (0.25*(x_0 + c64::i() * p_0).powf(2.0) - 0.5 * x_0 * x_0).exp().norm_sqr()
+    }
+}
+
+pub fn get_eigenstate(
+    n: usize, xs: &[f64],
     potential: &impl Fn(f64) -> f64
-) -> Result<(f64, impl Fn(f64) -> Complex), LapackError> {
-    let delta_x = (x_final - x_initial) / (n_x as f64 - 1.0);
+) -> Result<(f64, Vec<c64>), LapackError> {
+    let delta_x = xs[1] - xs[0];
     let beta = -1.0 / (2.0 * delta_x.powi(2));
     let mut info = 0;
 
-    let mut diagonal = (0..n_x)
-        .map(|i| -2.0 * beta + potential(i as f64 * delta_x + x_initial))
+    let mut diagonal = xs.iter()
+        .map(|&x| -2.0 * beta + potential(x))
         .collect::<Vec<f64>>();
-    let mut off_diagonal = vec![beta; n_x - 1];
-    let mut workspace=  vec![0.0; 4 * n_x];
+    let mut off_diagonal = vec![beta; xs.len() - 1];
+    let mut workspace=  vec![0.0; 4 * xs.len()];
 
     zsteqr(
         'N' as u8,
-        n_x as i32,
+        xs.len() as i32,
         &mut diagonal[..],
         &mut off_diagonal[..],
         &mut [][..],
-        n_x as i32,
+        xs.len() as i32,
         &mut workspace[..],
         &mut info
     );
 
-    let mut eigenvector = vec![ONE.into(); n_x];
-    let ground_state_energy = diagonal[0];
+    let mut eigenvector = vec![1.0.into(); xs.len()];
+    let state_energy = diagonal[n];
+    let mut diagonal = xs.iter()
+        .map(|&x| (-2.0 * beta + potential(x) - state_energy).into())
+        .collect::<Vec<c64>>();
 
     for _ in 0..10 {
-        let mut diagonal = (0..n_x)
-            .map(|i| (-2.0 * beta + potential(i as f64 * delta_x + x_initial) - ground_state_energy).into())
-            .collect::<Vec<c64>>();
         let mut info = 0;
 
+        diagonal.iter_mut()
+            .zip(xs.iter())
+            .for_each(|(d, &x)| *d = (-2.0 * beta + potential(x) - state_energy).into());
+
         zgtsv(
-            n_x as i32,
+            xs.len() as i32,
             1,
-            &mut vec![beta.into(); n_x - 1][..],
+            &mut vec![beta.into(); xs.len() - 1][..],
             &mut diagonal[..],
-            &mut vec![beta.into(); n_x - 1][..],
+            &mut vec![beta.into(); xs.len() - 1][..],
             &mut eigenvector,
-            n_x as i32,
+            xs.len() as i32,
             &mut info
         );
 
@@ -156,18 +986,10 @@ pub fn ground_state(
         }
     }
 
-    let magnitude = (0..n_x).map(|i| eigenvector[i].norm_sqr() * delta_x).sum::<f64>().sqrt();
+    eigenvector.iter_mut().for_each(|x| *x = *x / delta_x.sqrt());
 
     match info {
-        0 => Ok((ground_state_energy, move |x: f64| {
-            let n1 = ((x - x_initial) / delta_x).floor() as usize;
-            let n2 = ((x - x_initial) / delta_x).ceil() as usize;
-            let x_mid = (x - n1 as f64 * delta_x - x_initial) / delta_x;
-            let psi_n = eigenvector[n1];
-            let psi_n_plus_1 = if n2 == n_x { psi_n } else { eigenvector[n2] };
-
-            (((1.0 - x_mid) * psi_n + x_mid * psi_n_plus_1) / magnitude).into()
-        })),
+        0 => Ok((state_energy, eigenvector)),
         i @ ..=-1 => Err(LapackError {
             info: i,
             message: format!("The value at {i} had an illegal value")
@@ -180,102 +1002,40 @@ pub fn ground_state(
 }
 
 #[test]
-fn test_ground_state() {
-    let n_x: usize = 501;
+fn test_get_eigenstate() {
+    let n_x: usize = 3001;
     let x_initial: f64 = -100.0;
     let x_final: f64 = 100.0;
+    let delta_x = (x_final - x_initial) / (n_x as f64 - 1.0);
+    let xs = (0..n_x).map(|i| i as f64 * delta_x + x_initial).collect::<Vec<f64>>();
     let potential = |x: f64|  -1.0 / (1.0 + x.powi(2)).sqrt();
-
-    let (_, ground_state) = ground_state(
-        n_x,
-        x_initial,
-        x_final,
-        &potential
-    ).unwrap();
-
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-
-    for i in 0..5*n_x {
-        let x_i = i as f64 * (x_final - x_initial) / ((5 * n_x) as f64 - 1.0) + x_initial;
-        let computed = ground_state(x_i);
-
-        xs.push(x_i);
-        ys.push(computed.magnitude());
-
-        println!("Ψ_0({:.4}) = {:.8}", x_i, computed);
-    }
-
-    let scatter = Scatter::new(xs, ys)
-        .name("Ψ_0")
-        .line(Line::new().width(0.0))
-        .mode(Mode::Markers);
-
     let mut plot = Plot::new();
-    plot.add_trace(scatter);
+
+    for n in 0..3 {
+        let (energy, state) = get_eigenstate(
+            n,
+            &xs,
+            &potential
+        ).unwrap();
+
+        let mut ts: Vec<f64> = Vec::new();
+        let mut ys = Vec::new();
+        let mut magnitude_sqr = 0.0;
+        for i in 0..n_x {
+            ts.push(xs[i]);
+            ys.push(state[i].norm());
+
+            magnitude_sqr += state[i].norm_sqr() * delta_x;
+        }
+
+        let scatter = Scatter::new(ts, ys)
+            .name(format!("Ψ_{}(x)", n))
+            .line(Line::new().width(0.0))
+            .mode(Mode::Markers);
+
+        plot.add_trace(scatter);
+        println!("Ψ_{}(x) -- norm: {:.4}, energy: {:.4}", n, magnitude_sqr.sqrt(), energy);
+    }
     plot.set_configuration(Configuration::new().fill_frame(true));
-    plot.write_html("output/ground_state.html");
-}
-
-pub struct LagrangePolynomials {
-    points: Vec<Vec<f64>>,
-    weights: Vec<f64>
-}
-
-impl LagrangePolynomials {
-    pub fn new(num_points: usize, num_intervals: usize, start: f64, end: f64) -> Self {
-        let delta = (end - start) / (num_intervals as f64);
-
-        let quad_points = gauss_lobatto_quadrature(num_points, start, start + delta);
-
-        let points = (0..num_intervals)
-            .map(|n| quad_points.iter().map(|&(t, _)| t + n as f64 * delta).collect())
-            .collect();
-
-        let weights = quad_points.iter().map(|&(_, w)| w).collect();
-
-        Self { points, weights }
-    }
-
-    pub fn dims(&self) -> (usize, usize) {
-        (self.points.len(), self.weights.len())
-    }
-
-    pub fn get_indices(&self, index: usize) -> (usize, usize) {
-        let (num_points, num_intervals) = self.dims();
-
-        if index == 0 {
-            (0, 0)
-        } else if index == num_points * num_intervals - 1 {
-            (num_intervals - 1, num_points - 1)
-        } else {
-            ((index - 1) / num_points, (index - 1) % num_points + 1)
-        }
-    }
-
-    pub fn l(&self, index: usize, t: f64) -> f64 {
-        let (num_points, num_intervals) = self.dims();
-        let (q, i) = self.get_indices(index);
-
-        if index != 0 && i == 0 && t < self.points[q][i] {
-            lagrange(&self.points[q - 1], num_points - 1, t) // l^q_0 bridge, use the lagrange in the previous interval
-        } else if index != num_points * num_intervals - 1 && i == num_points - 1 && self.points[q][i] < t {
-            lagrange(&self.points[q + 1], 0, t) // l^q_{n-1} bridge, use the lagrange in the next interval
-        } else {
-            lagrange(&self.points[q], i, t) // Use the lagrange in the current interval
-        }
-    }
-
-    pub fn l_deriv(&self, index: usize, t: f64) -> f64 {
-        let (num_points, num_intervals) = self.dims();
-        let (q, i) = self.get_indices(index);
-
-        if index != 0 && i == 0 {
-            lagrange_deriv(&self.points[q - 1], num_points - 1, t) + lagrange_deriv(&self.points[q], i, t)
-        } else if index != num_points * num_intervals - 1 && i == num_points - 1 && self.points[q][i] < t {
-            lagrange_deriv(&self.points[q + 1], 0, t) + lagrange_deriv(&self.points[q], i, t)
-        } else {
-            lagrange_deriv(&self.points[q], i, t) // Use the lagrange in the current interval
-        }
-    }
+    plot.write_html("output/eigenstates.html");
 }
