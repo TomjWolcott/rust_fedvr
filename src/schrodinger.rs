@@ -10,8 +10,8 @@ use plotly::layout::Axis;
 use rayon::prelude::*;
 use crate::complex_wrapper::{Complex, ComplexMatrix, ComplexVector, I, LapackError, ONE, ZERO};
 use crate::gauss_quadrature::gauss_lobatto_quadrature;
-use crate::{lagrange, lagrange_deriv, sample, tdse_1d};
-use crate::lapack_wrapper::{complex_to_rgb, complex_to_rgb_just_hue};
+use crate::{lagrange, lagrange_deriv, sample};
+use crate::lapack_wrapper::{complex_to_rgb_just_hue};
 
 /*fn plot_result2(
     t_initial: f64,
@@ -118,8 +118,8 @@ pub(crate) fn plot_result<T: Into<c64>>(
     psi_0: impl Fn(f64, f64) -> T,
     plot_name: &str
 ) {
-    let num_points_t = 200;
-    let num_points_x = 200;
+    let num_points_t = 400;
+    let num_points_x = 400;
 
     let mut xs = Vec::with_capacity(num_points_x*num_points_t);
     let mut ys = Vec::with_capacity(num_points_x*num_points_t);

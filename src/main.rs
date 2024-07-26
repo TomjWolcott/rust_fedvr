@@ -12,9 +12,36 @@ mod schrodinger;
 mod tdse_1d;
 mod lapack_wrapper;
 mod bases;
+mod comparison_algorithms;
+mod solvers;
+mod matrices;
+mod simple_ode;
 
 fn main() {
 
+}
+
+pub fn factorial(n: usize) -> f64 {
+    (1..=n).map(|i| i as f64).product()
+}
+
+pub fn hermite(n: usize, x: f64) -> f64 {
+    let mut h_nm2 = 1.0;
+    let mut h_nm1 = 1.0;
+    let mut h_n = 1.0;
+
+    for i in 0..n {
+        h_n = 2.0 * x * h_nm1 - 2.0 * i as f64 * h_nm2;
+        h_nm2 = h_nm1;
+        h_nm1 = h_n;
+    }
+
+    h_n
+}
+
+#[test]
+fn test_hermite_poly() {
+    println!("{}", hermite(2, -8.0));
 }
 
 /// Assumes that xs is sorted in increasing order

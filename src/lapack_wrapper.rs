@@ -1,12 +1,9 @@
 use std::f64::consts::PI;
 use colored::Colorize;
 use colors_transform::{Color, Hsl};
-use itertools::Itertools;
 use lapack::c64;
 use lapack::fortran::{zgesv, zgetrf, zgetri};
-use rgsl::cblas::level2::zgemv;
-use rgsl::{CblasOrder, CblasTranspose};
-use crate::complex_wrapper::{LapackError, ZERO};
+use crate::complex_wrapper::{LapackError};
 
 pub fn solve_systems(mut matrix: Vec<c64>, dims: usize, mut vector: Vec<c64>) -> Result<Vec<c64>, LapackError> {
     let mut ipiv = vec![0; dims];
@@ -93,6 +90,33 @@ pub fn display_special_matrix(beta: c64, matrices: &[c64], vector: &[c64], dims:
     }
 }
 
+pub fn display_other_special_matrix(off_diagonal_diagonals: &[c64], diagonal_blocks: &[c64], vector: &[c64], dims: usize, num_blocks: usize) {
+    for i in 0..dims*num_blocks {
+        for j in 0..=dims*num_blocks {
+            let z = if j == dims*num_blocks {
+                if i == dims*num_blocks/2 { print!(" * ?? = "); } else { print!("   ??   "); }
+                vector[i]
+            } else if i / dims == j / dims {
+                diagonal_blocks[(j%dims)*dims + (i%dims) + (i/dims)*dims*dims]
+            } else if i == j + dims || i + dims == j {
+                off_diagonal_diagonals[i.min(j)]
+            } else {
+                0.0.into()
+            };
+
+            let (r, g, b) = complex_to_rgb(z);
+            let str = match z.norm_sqr() {
+                ..=0.0 => "┼─",
+                _ => "██"
+            };
+
+            print!("{}", str.truecolor(r, g, b));
+        }
+
+        println!();
+    }
+}
+
 pub fn display_system(matrix: &[c64], vector: &[c64], dims: usize) {
     for i in 0..dims {
         for j in 0..(dims+1) {
@@ -145,7 +169,7 @@ pub fn print_matrix(matrix: &[c64], rows: usize, cols: usize) {
 /// |  0   β*Ι  Α_3 |   | x3 |   | v3 |
 /// ```
 pub fn special_block_tridiagonal_solve(
-    beta: f64,
+    beta: c64,
     mut diagonal_blocks: Vec<c64>,
     mut rhs_vectors: Vec<c64>,
     num_blocks: usize,
@@ -168,7 +192,7 @@ pub fn special_block_tridiagonal_solve(
         let (m, m_prev) = get_neighboring_slices(&mut diagonal_blocks[..], dims*dims, k, k-1);
         let (rhs, rhs_prev) = get_neighboring_slices(&mut rhs_vectors[..], dims, k, k-1);
 
-        println!("Forward (i={k})");
+        // println!("Forward (i={k})");
 
         for i in 0..dims {
             for j in 0..dims {
@@ -189,7 +213,7 @@ pub fn special_block_tridiagonal_solve(
         let (rhs, rhs_next) = get_neighboring_slices(&mut rhs_vectors[..], dims, k, k + 1);
         let m = get_slice(&mut diagonal_blocks[..], dims * dims, k);
 
-        println!("Backward (i={k})");
+        // println!("Backward (i={k})");
 
         matrix_multiply(dims, -beta, &*rhs_next, &*m, rhs);
     }
@@ -240,10 +264,10 @@ fn test_special_tridiagonal_solve() {
         print_matrix(m, dims_t, dims_t);
     }
 
-    let m = matrices.clone();
+    // let m = matrices.clone();
 
     let solution = special_block_tridiagonal_solve(
-        beta, matrices.clone(), rhs_vectors.clone(), n_x, dims_t
+        beta.into(), matrices.clone(), rhs_vectors.clone(), n_x, dims_t
     ).unwrap();
 
     let mut rhs_computed = vec![0.0.into(); dims_t*n_x];
@@ -299,7 +323,7 @@ pub fn other_special_block_tridiagonal_solve(
         let (rhs, rhs_prev) = get_neighboring_slices(&mut rhs_vectors[..], dims, k, k-1);
         let b = get_slice(&mut off_diagonal_diagonals[..], dims, k-1);
 
-        println!("Forward (i={k})");
+        // println!("Forward (i={k})");
 
         for i in 0..dims {
             for j in 0..dims {
@@ -321,7 +345,7 @@ pub fn other_special_block_tridiagonal_solve(
         let m = &*get_slice(&mut diagonal_blocks[..], dims * dims, k);
         let b = &*get_slice(&mut off_diagonal_diagonals[..], dims, k);
 
-        println!("Backward (i={k})");
+        // println!("Backward (i={k})");
 
         for i in 0..dims {
             for j in 0..dims {
@@ -381,17 +405,18 @@ fn test_other_special_tridiagonal_solve() {
         print_matrix(m, dims_t, dims_t);
     }
 
-    let m = matrices.clone();
+    // let m = matrices.clone();
 
     let solution = other_special_block_tridiagonal_solve(
         off_diagonal_diagonals, matrices.clone(), rhs_vectors.clone(), n_x, dims_t
     ).unwrap();
 
-    let mut rhs_computed: Vec<c64> = vec![0.0.into(); dims_t*n_x];
+    let rhs_computed: Vec<c64> = vec![0.0.into(); dims_t*n_x];
 
     // matrix_multiply_special_tridiagonal(dims_t, n_x, &solution, beta, &matrices, &mut rhs_computed);
 
     println!("Solution:");
+
     for (
         (&sol, &expected_sol),
         (&rhs, &expected_rhs)
@@ -497,7 +522,7 @@ fn test_special_matrix_mul() {
 }
 
 /// Computes alpha * matrix * vector + offset and stores the result in offset
-pub fn matrix_multiply(dims: usize, alpha: f64, vector: &[c64], matrix: &[c64], offset: &mut [c64]) {
+pub fn matrix_multiply<T: std::ops::Mul<c64, Output = c64> + Copy>(dims: usize, alpha: T, vector: &[c64], matrix: &[c64], offset: &mut [c64]) {
     for i in 0..dims {
         for j in 0..dims {
             offset[j] += alpha * vector[i] * matrix[i * dims + j];

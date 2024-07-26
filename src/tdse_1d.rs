@@ -1,16 +1,88 @@
 use std::f64::consts::PI;
 use lapack::c64;
-use lapack::fortran::{zgtsv, zsteqr};
+use lapack::fortran::{zgesv, zgtsv, zsteqr};
 use plotly::{Configuration, Layout, Mesh3D, Plot, Scatter};
 use plotly::common::{Line, Marker, Mode, Title};
 use plotly::layout::Axis;
 use crate::complex_wrapper::LapackError;
-use crate::sample;
+use crate::{sample};
 use crate::lapack_wrapper::{complex_to_rgb_just_hue, display_special_matrix, display_system, solve_systems, special_block_tridiagonal_solve};
 use crate::schrodinger::plot_result;
 use plotly::color::Rgb as PlotlyRgb;
-use crate::bases::{Basis, Grid, LagrangePolynomials};
+use crate::bases::{Basis, Grid, HarmonicEigenfunctions, LagrangePolynomials};
+use crate::matrices::{SymTridiagonalMatrix, Matrix};
+use crate::solvers::Problem;
 
+pub trait Tdse1dSpatialBasis: Basis {
+    type Matrix: Matrix;
+
+    fn get_hamiltonian(&self, problem: &Tdse1dProblem, t: f64) -> Self::Matrix;
+
+    fn eigenstate(&self, problem: &Tdse1dProblem, n: usize) -> Vec<c64>;
+}
+
+impl Tdse1dSpatialBasis for Grid {
+    type Matrix = SymTridiagonalMatrix;
+
+    fn get_hamiltonian(&self, problem: &Tdse1dProblem, t: f64) -> Self::Matrix {
+        SymTridiagonalMatrix {
+            diagonal: self.points.iter().map(|&x_i| c64::new(0.0, 0.0) +
+                x_i * (problem.electric)(t) +
+                (problem.potential)(x_i) +
+                1.0 / (self.delta() * self.delta())
+            ).collect(),
+            off_diagonal: vec![(-1.0 / (2.0 * self.delta() * self.delta())).into(); self.points.len()-1]
+        }
+    }
+
+    fn eigenstate(&self, problem: &Tdse1dProblem, n: usize) -> Vec<c64> {
+        get_eigenstate(n, &self.points, &problem.potential).unwrap().1
+    }
+}
+
+impl Tdse1dSpatialBasis for HarmonicEigenfunctions {
+
+    type Matrix = SymTridiagonalMatrix;
+    fn get_hamiltonian(&self, problem: &Tdse1dProblem, t: f64) -> Self::Matrix {
+        SymTridiagonalMatrix {
+            diagonal: self.eigenvalues(),
+            off_diagonal: (1..self.len())
+                .map(|j| ((j as f64 / 2.0).sqrt() * (problem.electric)(t)).into())
+                .collect(),
+        }
+    }
+
+    fn eigenstate(&self, _: &Tdse1dProblem, n: usize) -> Vec<c64> {
+        let mut initial = vec![0.0.into(); self.len()];
+        initial[n] = 1.0.into();
+
+        initial
+    }
+}
+
+impl Problem for Tdse1dProblem {
+    type In = (f64, f64);
+    type Out = c64;
+}
+
+// pub struct Tdse1dSolution2 {
+//     vector: Vec<c64>,
+//     space_basis: Box<dyn Basis>,
+//     time_basis: Box<dyn Basis>
+// }
+//
+// impl Tdse1dSolution2 {
+//     fn eval(&self, x: f64, t: f64) -> c64 {
+//         let n_t = self.time_basis.len();
+//         let n_x = self.space_basis.len();
+//         let mut result = 0.0.into();
+//         for i in 0..n_x {
+//             result += self.time_basis.eval(t, &self.vector[i*n_t..(i+1)*n_t])
+//         }
+//
+//         result
+//     }
+// }
 
 pub(crate) fn plot_result_with_expected_prob<T: Into<c64>>(
     t_initial: f64,
@@ -172,6 +244,20 @@ pub(crate) fn plot_result_with_expected_prob<T: Into<c64>>(
     std::fs::write(format!("output/{}.html", plot_name), html).expect("Unable to write file");
 }
 
+// pub struct DiffeqOptions {
+//     debug: bool,
+//     plot_name: Option<String>,
+//     show_matrix: bool
+// }
+//
+// // If I wanted to generalize further and create a complicated API, this is what it'd be
+// pub trait DiffeqBasis {
+//     type Problem;
+//     type Solution;
+//
+//     fn solve(&self, options: DiffeqOptions, problem: &Self::Problem, initial: Vec<c64>) -> Self::Solution;
+// }
+
 #[derive(Clone)]
 pub struct Tdse1dOptions {
     initial_time_settings: Option<(f64, Vec<c64>)>,
@@ -281,12 +367,12 @@ impl Default for Tdse1dOptions {
 }
 
 pub struct Tdse1dProblem {
-    potential: Box<dyn Fn(f64) -> f64 + 'static>,
-    time_dependence: Box<dyn Fn(f64, f64) -> f64 + 'static>
+    pub potential: Box<dyn Fn(f64) -> f64 + Send + Sync + 'static>,
+    pub electric: Box<dyn Fn(f64) -> f64 + Send + Sync + 'static>
 }
 
 impl Tdse1dProblem {
-    fn two_level_atom(
+    pub fn two_level_atom(
         electric_0: f64,
         pulse_final: f64
     ) -> Self {
@@ -294,26 +380,26 @@ impl Tdse1dProblem {
             potential: Box::new(move |x| -1.0 / x.abs()),
             // potential: Box::new(move |x| -1.0 / (1.0 + x.powi(2)).sqrt()),
             // potential: Box::new(move |_x| 0.0),
-            time_dependence: Box::new(move |x, t| {
-                x * 0.5 * electric_0 * (PI * t / pulse_final).sin().powi(2)
+            electric: Box::new(move |t| {
+                0.5 * electric_0 * (PI * t / pulse_final).sin().powi(2)
             }),
         }
     }
 
-    fn harmonic_oscillator(
+    pub fn harmonic_oscillator(
         angular_frequency: f64,
         electric_0: f64,
         pulse_final: f64
     ) -> Self {
         Self {
             potential: Box::new(move |x| 0.5 * x.powi(2)),
-            time_dependence: Box::new(move |x, t| {
-                x * electric_0 * (PI * t / pulse_final).sin().powi(2) * (angular_frequency * t).cos()
+            electric: Box::new(move |t| {
+                electric_0 * (PI * t / pulse_final).sin().powi(2) * (angular_frequency * t).cos()
             }),
         }
     }
 
-    fn set_hydrogen_laser_pulse(
+    pub fn set_hydrogen_laser_pulse(
         angular_frequency: f64,
         electric_0: f64,
         phase_shift: f64,
@@ -323,24 +409,25 @@ impl Tdse1dProblem {
     ) -> Self {
         Self {
             potential: Box::new(move |x| -1.0 / (1.0 + x.powi(2)).sqrt()),
-            time_dependence: Box::new(move |x, t| {
+            electric: Box::new(move |t| {
                 let pulse = if t < pulse_initial || pulse_final < t {
                     0.0
                 } else if smooth_pulse {
                     (PI * (t - pulse_initial) / (pulse_final - pulse_initial)).sin().powi(2)
                 } else { 1.0 };
 
-                x * electric_0 * (angular_frequency * t + phase_shift).sin() * pulse
+                electric_0 * (angular_frequency * t + phase_shift).sin() * pulse
             }),
         }
     }
 }
 
+/*
 pub struct Tdse1dBasisGrid {
     ts: LagrangePolynomials,
     xs: Grid
 }
-/*
+
 impl Tdse1dBasisGrid {
     pub fn new(
         n_t: usize, t_i: f64, t_f: f64,
@@ -351,23 +438,41 @@ impl Tdse1dBasisGrid {
             xs: Grid::new(n_x, x_i, x_f)
         }
     }
+}
 
-    pub fn solve_system(&self, options: &Tdse1dOptions) -> Vec<c64> {
-        let (n_x, n_t) = (self.xs.dims(), self.ts.dims());
-        let mut matrix = vec![0.0.into(); n_t * n_t * n_x];
-        let mut rhs = vec![0.0.into(); n_t * n_x];
+impl DiffeqBasis for Tdse1dBasisGrid {
+    type Problem = Tdse1dProblem;
+    type Solution = Tdse1dSolution;
 
-        for n in 0..self.xs.dims() {
-            for index_it in 0..self.ts.dims() {
+    fn solve(&self, options: DiffeqOptions, problem: &Self::Problem, initial: Vec<c64>) -> Self::Solution {
+        let (n_x, n_t) = (self.xs.len(), self.ts.len());
+        let mut matrix: Vec<c64> = vec![0.0.into(); n_t * n_t * n_x];
+        let mut rhs: Vec<c64> = vec![0.0.into(); n_t * n_x];
+
+        let DiffeqOptions {
+            debug, plot_name, show_matrix
+        } = options;
+
+        let Tdse1dProblem {
+            potential, electric, ..
+        } = problem;
+
+        let beta = 1.0 / (2.0 * self.xs.delta().powi(2));
+
+        let mut matrix: Vec<c64> = vec![0.0.into(); n_t * n_t * n_x];
+        let mut rhs: Vec<c64> = vec![0.0.into(); n_t * n_x];
+
+        for n in 0..n_x {
+            let x_n = self.xs.point(n);
+
+            for index_it in 0..n_t {
                 let index_i = index_it + n * n_t * n_t;
-                let t_i = self.ts.point(index_it);
-                let alpha = potential(self.xs.points[n]) + time_dependence(xs[n], t_i) + 1.0 / delta_x.powi(2);
-
-                rhs[index_it + n * n_t] = (time_dependence(self.xs.points[n], t_i) * psi_0(n, t_i)).into();
+                let t_i = self.ts.point(index_i);
+                let alpha = potential(x_n) + x_n * electric(t_i) + 1.0 / self.xs.delta().powi(2);
 
                 for index_jt in 0..n_t {
-                    matrix[index_it + dims_t * index_jt + n * dims_t*dims_t] = (
-                        c64::i() * polys.l_deriv(index_jt, t_i) -
+                    matrix[index_it + n_t * index_jt + n * n_t * n_t] = (
+                        c64::i() * self.ts.l_deriv(index_jt, t_i) -
                             if index_it == index_jt { alpha } else { 0.0 }
                     ).into();
                 }
@@ -375,20 +480,82 @@ impl Tdse1dBasisGrid {
         }
 
         for n in 0..n_x {
-            rhs[n * n_t] = psi_i[n];
+            rhs[n * n_t] = initial[n];
 
             if n > 0 {
-                rhs[n * n_t] += beta * psi_i[n-1];
+                rhs[n * n_t] += beta * initial[n-1];
             }
 
             if n < n_x - 1 {
-                rhs[n * n_t] += beta * psi_i[n+1];
+                rhs[n * n_t] += beta * initial[n+1];
             }
 
             for index in 0..n_t {
                 matrix[index * n_t + n * n_t * n_t] = (if index == 0 { 1.0 } else { 0.0 }).into()
             }
         }
+
+        if show_matrix {
+            println!("Matrix:");
+            display_special_matrix(beta.into(), &matrix, &rhs, n_t, n_x);
+        }
+
+        let result = match special_block_tridiagonal_solve(beta.into(), matrix, rhs, n_x, n_t) {
+            Ok(sol) => sol,
+            Err(err) => {
+                panic!("Couldn't lapack: {:?}", err);
+            }
+        };
+
+        let solution = Tdse1dSolution {
+            vector: result,
+            t_basis_fns: self.ts.clone().into_basis_fns(),
+            dims_t: n_t,
+            xs: self.xs.points.clone(),
+            psi_0: Box::new(|_, _| 0.0.into()),
+        };
+
+        if debug && plot_name.is_some() { println!("PLOTTING"); }
+
+        if let Some(plot_name) = plot_name {
+            let (ground_energy, ground_state) = get_eigenstate(0, &solution.xs, &problem.potential)
+                .expect("Couldn't get eigenstate");
+            let psi_0 = |x: f64, t: f64| {
+                (-c64::i() * ground_energy * t).exp() * solution.interp_x(x, |n| ground_state[n])
+            };
+
+            plot_result(
+                self.ts.first(), self.ts.last(),
+                self.xs.first(), self.xs.last(),
+                &solution.get_wave_fn(), &psi_0, &plot_name
+            );
+        }
+
+        solution
+    }
+}
+
+pub struct Tdse1dBasisEigenfunctions {
+    ts: LagrangePolynomials,
+    num_eigenfunctions: usize,
+}
+
+impl Tdse1dBasisEigenfunctions {
+    pub fn new(
+        n_t: usize, t_i: f64, t_f: f64,
+        num_eigenfunctions: usize
+    ) -> Self {
+        Self {
+            ts: LagrangePolynomials::new(n_t, 1, t_i, t_f),
+            num_eigenfunctions
+        }
+    }
+
+    pub fn psi_n(&self, n: usize, x: f64) -> c64 {
+        let n_fact = (1..=n).product::<usize>() as f64;
+        let c_n = PI.powf(-0.25) / (n_fact * 2f64.powi(n as i32)).sqrt();
+
+        (c_n * hermite(n, x) * (-x*x / 2.0).exp()).into()
     }
 }*/
 
@@ -546,14 +713,14 @@ fn test_harmonic_solve() {
         1.0, 1.0, 100.0
     );
 
-    let mut options = Tdse1dOptions::new(
+    let options = Tdse1dOptions::new(
         10.0, 20, 1,
         -5e1, 5e1, 100001
     ).with_debug().with_driven_state(&problem, 0);//.with_plot("harmonic_oscillator".to_string());
 
     let solution = repeated_solve_tdse_1d(options.clone(), &problem, 10, solve_tdse_1d_optimized);
 
-    let prob_ground_expected = harmonic_ground_state_probability(1.0, 1.0, 100.0, 0);
+    let prob_ground_expected = harmonic_ground_state_probability(1.0, 1.0, 100.0);
     let prob_ground_computed = solution.get_population_probability_fn(0, &problem.potential);
     let norm_computed = solution.get_norm_fn();
 
@@ -567,7 +734,7 @@ fn test_harmonic_solve() {
     let mut ys_err = Vec::new();
 
     sample(200, 0.0, 100.0, |t| {
-        let expected = prob_ground_expected(t);
+        let expected = prob_ground_expected(t, 0);
         let computed = prob_ground_computed(t);
         let err = (expected - computed).abs();
         println!("P_0({t:.4}) = {: ^20} vs {: ^20} -- error: {err:.4e}", format!("{:.6}", expected), format!("{:.6}", computed));
@@ -633,12 +800,12 @@ pub fn solve_tdse_1d(options: Tdse1dOptions, problem: &Tdse1dProblem) -> Tdse1dS
         debug, plot_name, show_matrix, ..
     } = options;
 
-    let Tdse1dProblem { potential, time_dependence, .. } = problem;
+    let Tdse1dProblem { potential, electric, .. } = problem;
 
     let t_initial = *initial_time_settings.as_ref().map(|(t, _)| t).unwrap_or(&0.0);
-    let psi_initial = initial_time_settings.as_ref()
-        .map(|(_, psi)| psi.clone())
-        .unwrap_or(vec![0.0.into(); n_x]);
+    // let psi_initial = initial_time_settings.as_ref()
+    //     .map(|(_, psi)| psi.clone())
+    //     .unwrap_or(vec![0.0.into(); n_x]);
 
     let beta = 1.0 / (2.0 * delta_x.powi(2));
 
@@ -652,9 +819,9 @@ pub fn solve_tdse_1d(options: Tdse1dOptions, problem: &Tdse1dProblem) -> Tdse1dS
         for index_it in 0..dims_t {
             let index_i = index_it + n * dims_t;
             let t_i = polys.point(index_it);
-            let alpha = potential(xs[n]) + time_dependence(xs[n], t_i) + 1.0 / delta_x.powi(2);
+            let alpha = potential(xs[n]) + xs[n] * electric(t_i) + 1.0 / delta_x.powi(2);
 
-            vector[index_i] = (time_dependence(xs[n], t_i) * psi_0(n, t_i)).into();
+            vector[index_i] = (xs[n] * electric(t_i) * psi_0(n, t_i)).into();
 
             for index_jt in 0..dims_t {
                 let index_j = index_jt + n * dims_t;
@@ -721,7 +888,7 @@ pub fn solve_tdse_1d_optimized(options: Tdse1dOptions, problem: &Tdse1dProblem) 
         debug, plot_name, show_matrix, ..
     } = options;
 
-    let Tdse1dProblem { potential, time_dependence, .. } = problem;
+    let Tdse1dProblem { potential, electric, .. } = problem;
 
     let t_initial = *initial_time_settings.as_ref().map(|(t, _)| t).unwrap_or(&0.0);
     let psi_initial = initial_time_settings.as_ref()
@@ -730,7 +897,7 @@ pub fn solve_tdse_1d_optimized(options: Tdse1dOptions, problem: &Tdse1dProblem) 
 
     let beta = 1.0 / (2.0 * delta_x.powi(2));
 
-    let dims_t = polys.dims();
+    let dims_t = polys.len();
     let dims = dims_t * n_x;
     let mut matrix: Vec<c64> = vec![0.0.into(); dims_t*dims_t * n_x];
 
@@ -738,11 +905,11 @@ pub fn solve_tdse_1d_optimized(options: Tdse1dOptions, problem: &Tdse1dProblem) 
 
     for n in 0..n_x {
         for index_it in 0..dims_t {
-            let index_i = index_it + n * dims_t*dims_t;
+            // let index_i = index_it + n * dims_t*dims_t;
             let t_i = polys.point(index_it);
-            let alpha = potential(xs[n]) + time_dependence(xs[n], t_i) + 1.0 / delta_x.powi(2);
+            let alpha = potential(xs[n]) + xs[n]*electric(t_i) + 1.0 / delta_x.powi(2);
 
-            rhs[index_it + n*dims_t] = (time_dependence(xs[n], t_i) * psi_0(n, t_i)).into();
+            rhs[index_it + n*dims_t] = (xs[n]*electric(t_i) * psi_0(n, t_i)).into();
 
             for index_jt in 0..dims_t {
                 matrix[index_it + dims_t * index_jt + n * dims_t*dims_t] = (
@@ -774,7 +941,7 @@ pub fn solve_tdse_1d_optimized(options: Tdse1dOptions, problem: &Tdse1dProblem) 
         display_special_matrix(beta.into(), &matrix, &rhs, dims_t, n_x);
     }
 
-    let result = match special_block_tridiagonal_solve(beta, matrix, rhs, n_x, dims_t) {
+    let result = match special_block_tridiagonal_solve(beta.into(), matrix, rhs, n_x, dims_t) {
         Ok(sol) => sol,
         Err(err) => {
             panic!("Couldn't lapack: {:?}", err);
@@ -858,7 +1025,7 @@ pub fn repeated_solve_tdse_1d(
     let solution = Tdse1dSolution {
         vector: solution,
         t_basis_fns: Box::new(move |index, t| {
-            let k = (index / dims_t);
+            let k = index / dims_t;
 
             if k as f64 * delta_time + t_initial <= t && t < (k + 1) as f64 * delta_time + t_initial {
                 t_basis_fns[k](index % dims_t, t)
@@ -890,25 +1057,10 @@ pub fn repeated_solve_tdse_1d(
     solution
 }
 
-fn harmonic_ground_state_probability(w0: f64, e0: f64, pulse_final: f64, n: usize) -> impl Fn(f64) -> f64 {
+pub fn harmonic_ground_state_probability(w0: f64, e0: f64, pulse_final: f64) -> impl Fn(f64, usize) -> f64 {
     let alpha = 2.0 * PI / pulse_final;
 
-    move |t| {
-        // FORTRAN from Ryan: (replace t+dt -> t)
-        // if (omega == 0d0) then
-        // I1 = -E_0/4d0*(2*sin(t+dt) - sin((alpha-1)*(t+dt))/(alpha-1) - sin((alpha+1)*(t+dt))/(alpha+1))
-        //
-        // I2 = -E_0/4d0*(-2*cos(t+dt) + 2 + cos((alpha+1)*(t+dt))/(alpha+1) - 1/(alpha+1)&
-        //     - cos((alpha-1)*(t+dt))/(alpha-1) + 1/(alpha-1))
-        //
-        // else if (omega == 1d0) then
-        //
-        // I1 = -E_0/8d0*(2*(t+dt) - 2*sin(alpha*(t+dt))/alpha + sin(2*(t+dt))&
-        //     - sin((alpha-2)*(t+dt))/(alpha-2) - sin((alpha+2)*(t+dt))/(alpha+2))
-        //
-        // I2 = -E_0/8d0*(-cos(2*(t+dt)) + 1 + cos((alpha+2)*(t+dt))/(alpha+2) - 1/(alpha+2)&
-        //     - cos((alpha-2)*(t+dt))/(alpha-2) + 1/(alpha-2))
-
+    move |t, n| {
         let (i1, i2) = if w0 == 0.0 {(
             -e0/4.0 * (2.0 * t.sin() - ((alpha-1.0)*t).sin()/(alpha-1.0) - ((alpha+1.0)*t).sin()/(alpha+1.0)),
             -e0/4.0 * (-2.0 * t.cos() + 2.0 + ((alpha+1.0)*t).cos()/(alpha+1.0) - 1.0 / (alpha+1.0) - ((alpha-1.0)*t).cos()/(alpha-1.0) + 1.0 / (alpha-1.0))
@@ -921,7 +1073,16 @@ fn harmonic_ground_state_probability(w0: f64, e0: f64, pulse_final: f64, n: usiz
         let x_0 = t.sin() * i1 - t.cos() * i2;
         let p_0 = t.cos() * i1 + t.sin() * i2;
 
-        (0.25*(x_0 + c64::i() * p_0).powf(2.0) - 0.5 * x_0 * x_0).exp().norm_sqr()
+        let g_t = (x_0 + c64::i() * p_0).powf(2.0)/4.0 - x_0*x_0/2.0;
+        let h_t = (x_0 + c64::i() * p_0) / 2.0;
+
+        let mut prob = g_t.exp().norm_sqr();
+
+        for i in 1..=n {
+            prob = 2.0 / (i as f64) * h_t.norm_sqr() * prob;
+        }
+
+        prob
     }
 }
 
