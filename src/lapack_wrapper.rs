@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 use colored::Colorize;
 use colors_transform::{Color, Hsl};
 use lapack::c64;
-use lapack::fortran::{zgesv, zgetrf, zgetri};
+use lapack::fortran::{zgesv, zgetrf, zgetrf2, zgetri};
 use crate::complex_wrapper::{LapackError};
 
 pub fn solve_systems(mut matrix: Vec<c64>, dims: usize, mut vector: Vec<c64>) -> Result<Vec<c64>, LapackError> {
@@ -357,6 +357,64 @@ pub fn other_special_block_tridiagonal_solve(
     Ok(rhs_vectors)
 }
 
+pub fn other_special_block_tridiagonal_solve_backwards(
+    mut off_diagonal_diagonals: Vec<c64>,
+    mut diagonal_blocks: Vec<c64>,
+    mut rhs_vectors: Vec<c64>,
+    num_blocks: usize,
+    dims: usize
+) -> Result<Vec<c64>, LapackError> {
+    let lwork = optimal_zgetri_lwork(dims);
+    let mut work: Vec<c64> = vec![0.0.into(); lwork];
+    let mut ipiv: Vec<i32> = vec![0; dims];
+    let mut temp: Vec<c64> = vec![0.0.into(); dims];
+
+    let m = get_slice(&mut diagonal_blocks[..], dims*dims, num_blocks-1);
+    let rhs = get_slice(&mut rhs_vectors[..], dims, num_blocks-1);
+
+    invert(dims, m, &mut ipiv, &mut work)?;
+    matrix_multiply(dims, 1.0, &*rhs, &*m, &mut temp);
+    rhs.copy_from_slice(&*temp);
+
+    for k in (0..num_blocks-1).rev() {
+        let (m, m_prev) = get_neighboring_slices(&mut diagonal_blocks[..], dims*dims, k, k+1);
+        let (rhs, rhs_prev) = get_neighboring_slices(&mut rhs_vectors[..], dims, k, k+1);
+        let b = get_slice(&mut off_diagonal_diagonals[..], dims, k);
+
+        // println!("Forward (i={k})");
+
+        for i in 0..dims {
+            for j in 0..dims {
+                m[i * dims + j] -= b[i] * b[j] * m_prev[i * dims + j];
+            }
+
+            temp[i] = 0.0.into();
+            rhs[i] -= b[i] * rhs_prev[i];
+        }
+
+        invert(dims, m, &mut ipiv, &mut work)?;
+
+        matrix_multiply(dims, 1.0, rhs, m, &mut temp);
+        rhs.copy_from_slice(&*temp);
+    }
+
+    for k in 1..num_blocks {
+        let (rhs, rhs_next) = get_neighboring_slices(&mut rhs_vectors[..], dims, k, k - 1);
+        let m = &*get_slice(&mut diagonal_blocks[..], dims * dims, k);
+        let b = &*get_slice(&mut off_diagonal_diagonals[..], dims, k-1);
+
+        // println!("Backward (i={k})");
+
+        for i in 0..dims {
+            for j in 0..dims {
+                rhs[j] -= b[i] * rhs_next[i] * m[i * dims + j];
+            }
+        }
+    }
+
+    Ok(rhs_vectors)
+}
+
 #[test]
 fn test_other_special_tridiagonal_solve() {
     let dims_t = 2;
@@ -407,7 +465,7 @@ fn test_other_special_tridiagonal_solve() {
 
     // let m = matrices.clone();
 
-    let solution = other_special_block_tridiagonal_solve(
+    let solution = other_special_block_tridiagonal_solve_backwards(
         off_diagonal_diagonals, matrices.clone(), rhs_vectors.clone(), n_x, dims_t
     ).unwrap();
 

@@ -3,6 +3,7 @@ use itertools::MultiUnzip;
 use lapack::c64;
 use plotly::{Configuration, Contour, Plot};
 use rayon::prelude::{ParallelSliceMut, ParallelIterator, IndexedParallelIterator};
+use rgsl::numerical_differentiation::deriv_central;
 use crate::complex_wrapper::{Complex, ComplexMatrix, ComplexVector, E, I, ONE, ZERO};
 use crate::gauss_quadrature::gauss_lobatto_quadrature;
 
@@ -48,6 +49,9 @@ fn test_hermite_poly() {
 fn lagrange(xs: &Vec<f64>, i: usize, x: f64) -> f64 {
     if xs[0] - 1e-8 <= x && x <= *xs.last().unwrap() + 1e-8 {
         xs.iter().enumerate().fold(1.0, |acc, (j, &x_j)| {
+            if i != j && (((x - x_j) / (xs[i] - x_j)).is_infinite() || ((x - x_j) / (xs[i] - x_j)).is_nan() || acc.is_nan() || acc.is_infinite()) {
+                panic!("NAN/INF in lagrange with xs[{i}] ({}) vs xs[{j}] ({}), x={}, (x - x_j)={}, (xs[i] - x_j)={},acc={}", xs[i], x_j, x, x - x_j, xs[i] - x_j, acc);
+            }
             acc * if i == j { 1.0 } else { (x - x_j) / (xs[i] - x_j) }
         })
     } else {
@@ -57,19 +61,25 @@ fn lagrange(xs: &Vec<f64>, i: usize, x: f64) -> f64 {
 
 fn lagrange_deriv(xs: &Vec<f64>, i: usize, mut x: f64) -> f64 {
     if xs[0] - 1e-8 <= x && x <= *xs.last().unwrap() + 1e-8 {
-        x += 5e-12;
+        x += 5e-11;
 
         let l1 = lagrange(xs, i, x) * xs.iter().enumerate().map(|(j, &x_j)| {
             if i == j { 0.0 } else { 1.0 / (x - x_j) }
         }).sum::<f64>();
 
-        x -= 1e-11;
+        x -= 1e-10;
 
         let l2 = lagrange(xs, i, x) * xs.iter().enumerate().map(|(j, &x_j)| {
             if i == j { 0.0 } else { 1.0 / (x - x_j) }
         }).sum::<f64>();
 
-        (l1 + l2) / 2.0
+        let result = (l1 + l2) / 2.0;
+
+        if result.is_nan() {
+            println!("NAN @ i={i}, x={x}")
+        }
+
+        result
     } else {
         0.0
     }

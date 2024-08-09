@@ -71,6 +71,117 @@ impl Matrix for SymTridiagonalMatrix {
 }
 
 #[derive(Clone)]
+pub struct LowerTriangularConstBandedMatrix {
+    pub diagonal: Vec<c64>,
+    pub(crate) band_consts: Vec<c64>,
+}
+
+impl Matrix for LowerTriangularConstBandedMatrix {
+    fn solve_system(mut self, mut rhs: Vec<c64>) -> Vec<c64> {
+        let n = self.diagonal.len();
+
+        rhs[0] /= self.diagonal[0];
+
+        for i in 1..n {
+            for j in 0..self.band_consts.len().min(i) {
+                let temp = rhs[i - j - 1];
+                rhs[i] += temp * self.band_consts[j];
+            }
+
+            rhs[i] /= self.diagonal[i];
+        }
+
+        rhs
+    }
+
+    fn add_num(mut self, z: c64) -> Self {
+        self.diagonal.iter_mut().for_each(|x| *x += z);
+        self
+    }
+
+    fn mul_num(mut self, z: c64) -> Self {
+        self.diagonal.iter_mut().for_each(|x| *x *= z);
+        self.band_consts.iter_mut().for_each(|x| *x *= z);
+
+        self
+    }
+
+    fn mul_vec(mut self, v: &[c64]) -> Vec<c64> {
+        let n = self.diagonal.len();
+        let mut result = vec![0.0.into(); n];
+
+        for i in 0..n {
+            for j in 0..self.band_consts.len().min(i) {
+                result[i] += v[i - j - 1] * self.band_consts[j];
+            }
+
+            result[i] += self.diagonal[i] * v[i];
+        }
+
+        result
+    }
+}
+
+/*
+#[derive(Clone)]
+pub struct SymConstBandedMatrix {
+    pub diagonal: Vec<c64>,
+    band_consts: Vec<c64>,
+}
+
+impl Matrix for SymConstBandedMatrix {
+    fn solve_system(mut self, mut rhs: Vec<c64>) -> Vec<c64> {
+        let n = self.diagonal.len();
+
+        for i in 0..n {
+            rhs[i] /= self.diagonal[i];
+        }
+
+        for i in 1..n {
+            rhs[i] -= self.band_consts[0] * rhs[i-1];
+        }
+
+        for i in 1..n {
+            rhs[n-i-1] -= self.band_consts[1] * rhs[n-i];
+        }
+
+        rhs
+    }
+
+    fn add_num(mut self, z: c64) -> Self {
+        self.diagonal.iter_mut().for_each(|x| *x += z);
+        self
+    }
+
+    fn mul_num(mut self, z: c64) -> Self {
+        self.diagonal.iter_mut().for_each(|x| *x *= z);
+        self.band_consts.iter_mut().for_each(|x| *x *= z);
+
+        self
+    }
+
+    fn mul_vec(mut self, v: &[c64]) -> Vec<c64> {
+        let n = self.diagonal.len();
+        let mut result = vec![0.0.into(); n];
+
+        for i in 0..n {
+            result[i] += self.diagonal[i] * v[i];
+
+            if i > 0 {
+                result[i] += self.band_consts[0] * v[i-1];
+            }
+
+            if i < n-1 {
+                result[i] += self.band_consts[1] * v[i+1];
+            }
+        }
+
+        result
+    }
+}
+ */
+
+#[derive(Clone)]
 pub struct FullMatrix {
     data: Vec<c64>,
     dims: usize

@@ -1,4 +1,5 @@
 use std::f64::consts::PI;
+use itertools::Itertools;
 use lapack::c64;
 use lapack::fortran::{zgesv, zgtsv, zsteqr};
 use plotly::{Configuration, Layout, Mesh3D, Plot, Scatter};
@@ -9,14 +10,16 @@ use crate::{sample};
 use crate::lapack_wrapper::{complex_to_rgb_just_hue, display_special_matrix, display_system, solve_systems, special_block_tridiagonal_solve};
 use crate::schrodinger::plot_result;
 use plotly::color::Rgb as PlotlyRgb;
-use crate::bases::{Basis, Grid, HarmonicEigenfunctions, LagrangePolynomials};
-use crate::matrices::{SymTridiagonalMatrix, Matrix};
+use crate::bases::{BackwardGrid, Basis, Grid, HarmonicEigenfunctions, LagrangePolynomials};
+use crate::matrices::{SymTridiagonalMatrix, Matrix, LowerTriangularConstBandedMatrix};
 use crate::solvers::Problem;
 
 pub trait Tdse1dSpatialBasis: Basis {
     type Matrix: Matrix;
 
     fn get_hamiltonian(&self, problem: &Tdse1dProblem, t: f64) -> Self::Matrix;
+
+    fn get_hamiltonian_element(&self, problem: &Tdse1dProblem, t: f64, i: usize, j: usize) -> c64;
 
     fn eigenstate(&self, problem: &Tdse1dProblem, n: usize) -> Vec<c64>;
 }
@@ -33,6 +36,18 @@ impl Tdse1dSpatialBasis for Grid {
             ).collect(),
             off_diagonal: vec![(-1.0 / (2.0 * self.delta() * self.delta())).into(); self.points.len()-1]
         }
+    }
+
+    fn get_hamiltonian_element(&self, problem: &Tdse1dProblem, t: f64, i: usize, j: usize) -> c64 {
+        (if i == j {
+            self.points[i] * (problem.electric)(t) +
+                (problem.potential)(self.points[i]) +
+                1.0 / (self.delta() * self.delta())
+        } else if i == j + 1 || i + 1 == j {
+            -1.0 / (2.0 * self.delta() * self.delta())
+        } else {
+            0.0
+        }).into()
     }
 
     fn eigenstate(&self, problem: &Tdse1dProblem, n: usize) -> Vec<c64> {
@@ -52,11 +67,60 @@ impl Tdse1dSpatialBasis for HarmonicEigenfunctions {
         }
     }
 
+    fn get_hamiltonian_element(&self, problem: &Tdse1dProblem, t: f64, i: usize, j: usize) -> c64 {
+        if i == j {
+            self.eigenvalues()[i]
+        } else if i == j + 1 || i + 1 == j {
+            ((i.max(j) as f64 / 2.0).sqrt() * (problem.electric)(t)).into()
+        } else {
+            0.0.into()
+        }
+    }
+
     fn eigenstate(&self, _: &Tdse1dProblem, n: usize) -> Vec<c64> {
         let mut initial = vec![0.0.into(); self.len()];
         initial[n] = 1.0.into();
 
         initial
+    }
+}
+
+impl Tdse1dSpatialBasis for BackwardGrid {
+    type Matrix = LowerTriangularConstBandedMatrix;
+
+    fn get_hamiltonian(&self, problem: &Tdse1dProblem, t: f64) -> Self::Matrix {
+        let mut coefs = self.second_deriv_coefficients()
+            .into_iter()
+            .map(|coef| (-coef / (2.0 * self.delta() * self.delta())).into()).collect_vec();
+        let center_coef = coefs.remove(0);
+
+        LowerTriangularConstBandedMatrix {
+            diagonal: self.points.iter().map(|&x_i| c64::new(0.0, 0.0) +
+                x_i * (problem.electric)(t) +
+                (problem.potential)(x_i) +
+                center_coef
+            ).collect(),
+            band_consts: coefs
+        }
+    }
+
+    fn get_hamiltonian_element(&self, problem: &Tdse1dProblem, t: f64, i: usize, j: usize) -> c64 {
+        let coefs = self.second_deriv_coefficients();
+
+        if i == j {
+            c64::new(0.0, 0.0) +
+                self.points[i] * (problem.electric)(t) +
+                (problem.potential)(self.points[i]) +
+                (-coefs[0] / (2.0 * self.delta() * self.delta()))
+        } else if i < j && i + coefs.len() >= j {
+            (-coefs[j - i] / (2.0 * self.delta() * self.delta())).into()
+        } else {
+            0.0.into()
+        }
+    }
+
+    fn eigenstate(&self, problem: &Tdse1dProblem, n: usize) -> Vec<c64> {
+        get_eigenstate(n, &self.points, &problem.potential).unwrap().1
     }
 }
 
@@ -399,7 +463,7 @@ impl Tdse1dProblem {
         }
     }
 
-    pub fn set_hydrogen_laser_pulse(
+    pub fn hydrogen_laser_pulse(
         angular_frequency: f64,
         electric_0: f64,
         phase_shift: f64,
@@ -777,7 +841,7 @@ fn test_harmonic_solve() {
 
 #[test]
 fn test_hydrogen_solve() {
-    let problem = Tdse1dProblem::set_hydrogen_laser_pulse(
+    let problem = Tdse1dProblem::hydrogen_laser_pulse(
         0.148, 0.1, 0.0,
         false, 0.0, 1200.0
     );
@@ -1172,7 +1236,7 @@ fn test_get_eigenstate() {
     let potential = |x: f64|  -1.0 / (1.0 + x.powi(2)).sqrt();
     let mut plot = Plot::new();
 
-    for n in 0..3 {
+    for n in 100..101 {
         let (energy, state) = get_eigenstate(
             n,
             &xs,
